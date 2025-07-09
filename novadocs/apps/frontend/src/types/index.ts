@@ -121,5 +121,15 @@ export interface UpdatePageInput {
   metadata?: Record<string, any>
   contentYjs?: string
   position?: number
-  isTemplate?: boolean
+  isTemplate?: boolean}
+export interface FolderPage {
+  id: string
+  title: string
+  href: string
+}
+
+export interface Folder {
+  id: string
+  name: string
+  pages: FolderPage[]
 }

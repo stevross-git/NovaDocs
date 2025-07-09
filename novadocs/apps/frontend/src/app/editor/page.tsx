@@ -1,7 +1,8 @@
 'use client'
 
 import { useState, useEffect } from 'react'
-import { Save, Clock, Wifi, WifiOff } from 'lucide-react'
+import { Save, Clock, Wifi, WifiOff, FolderPlus } from 'lucide-react'
+import { useFolders } from '@/hooks/useFolders'
 
 export default function EditorPage() {
   const [content, setContent] = useState('# Welcome to NovaDocs Editor\n\nStart typing your content here...\n\n## Features\n- Real-time editing\n- Markdown preview\n- Auto-save\n- Collaboration ready\n\n> This is a blockquote\n\n```javascript\nconst hello = "world";\nconsole.log(hello);\n```')
@@ -9,6 +10,7 @@ export default function EditorPage() {
   const [isConnected, setIsConnected] = useState(true)
   const [lastSaved, setLastSaved] = useState('')
   const [saveStatus, setSaveStatus] = useState('')
+  const { folders, addPageToFolder } = useFolders()
 
   // Auto-save functionality
   useEffect(() => {
@@ -54,6 +56,15 @@ export default function EditorPage() {
     await handleAutoSave()
   }
 
+  const handleSaveToFolder = (folderId: string) => {
+    const pageId = title.toLowerCase().replace(/\s+/g, '-')
+    addPageToFolder(folderId, {
+      id: pageId,
+      title,
+      href: `/pages/${pageId}`
+    })
+  }
+
   // Simple markdown-to-HTML converter
   const renderMarkdown = (text) => {
     return text
@@ -91,7 +102,22 @@ export default function EditorPage() {
             {lastSaved && (
               <span className="text-xs text-gray-500">Last saved: {lastSaved}</span>
             )}
-            <button 
+            <select
+              onChange={(e) => {
+                const fid = e.target.value
+                if (fid) handleSaveToFolder(fid)
+                e.currentTarget.selectedIndex = 0
+              }}
+              className="text-sm border rounded-md px-2 py-1"
+            >
+              <option value="">Save to folder</option>
+              {folders.map((f) => (
+                <option key={f.id} value={f.id}>
+                  {f.name}
+                </option>
+              ))}
+            </select>
+            <button
               onClick={handleSave}
               className="flex items-center bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
             >

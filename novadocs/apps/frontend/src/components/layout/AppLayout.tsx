@@ -3,9 +3,9 @@
 import { useState } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
-import { 
-  Home, 
-  FileText, 
+import {
+  Home,
+  FileText,
   Settings, 
   BarChart3, 
   Users, 
@@ -17,8 +17,10 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
-  FolderOpen
+  FolderOpen,
+  Pencil
 } from 'lucide-react'
+import { useFolders } from '@/hooks/useFolders'
 
 interface AppLayoutProps {
   children: React.ReactNode
@@ -27,6 +29,7 @@ interface AppLayoutProps {
 export default function AppLayout({ children }: AppLayoutProps) {
   const [sidebarOpen, setSidebarOpen] = useState(false)
   const [pagesExpanded, setPagesExpanded] = useState(true)
+  const [foldersExpanded, setFoldersExpanded] = useState(true)
   const pathname = usePathname()
 
   const navigation = [
@@ -45,6 +48,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
     { name: 'Team Guidelines', href: '/pages/guidelines', updated: '3 hours ago' },
     { name: 'Project Roadmap', href: '/pages/roadmap', updated: '1 day ago' },
   ]
+
+  const { folders, renameFolder } = useFolders()
 
   const isActive = (href: string) => pathname === href
 
@@ -102,6 +107,69 @@ export default function AppLayout({ children }: AppLayoutProps) {
               )
             })}
           </nav>
+
+          {/* Recent Pages Section */}
+          <div className="px-2 pb-4">
+            <div className="border-t border-gray-200 pt-4">
+              <button
+                onClick={() => setFoldersExpanded(!foldersExpanded)}
+                className="flex items-center w-full px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md"
+              >
+                {foldersExpanded ? (
+                  <ChevronDown className="mr-2 h-4 w-4" />
+                ) : (
+                  <ChevronRight className="mr-2 h-4 w-4" />
+                )}
+                {foldersExpanded ? (
+                  <FolderOpen className="mr-2 h-4 w-4" />
+                ) : (
+                  <Folder className="mr-2 h-4 w-4" />
+                )}
+                Folders
+              </button>
+
+              {foldersExpanded && (
+                <div className="mt-2 space-y-2">
+                  {folders.map((folder) => (
+                    <div key={folder.id} className="px-2">
+                      <div className="flex items-center justify-between">
+                        <Link
+                          href={`/folders/${folder.id}`}
+                          className="text-sm text-gray-700 hover:underline"
+                          onClick={() => setSidebarOpen(false)}
+                        >
+                          {folder.name}
+                        </Link>
+                        <button
+                          onClick={() => {
+                            const name = prompt('Rename folder', folder.name)
+                            if (name) renameFolder(folder.id, name)
+                          }}
+                          className="text-gray-500 hover:text-gray-700"
+                        >
+                          <Pencil className="h-3 w-3" />
+                        </button>
+                      </div>
+                      {folder.pages.length > 0 && (
+                        <div className="ml-4 mt-1 space-y-1">
+                          {folder.pages.map((p) => (
+                            <Link
+                              key={p.id}
+                              href={p.href}
+                              className="block text-xs text-gray-600 hover:underline"
+                              onClick={() => setSidebarOpen(false)}
+                            >
+                              {p.title}
+                            </Link>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
 
           {/* Recent Pages Section */}
           <div className="px-2 pb-4">
