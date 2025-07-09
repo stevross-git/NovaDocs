@@ -90,7 +90,7 @@ class Page(Base, TimestampMixin):
     slug: Mapped[str] = mapped_column(String(200), nullable=False)
     content: Mapped[str] = mapped_column(Text, default="")
     
-    # Organization
+    # Relationships
     workspace_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), 
         ForeignKey("workspaces.id", ondelete="CASCADE"),
@@ -100,8 +100,6 @@ class Page(Base, TimestampMixin):
         UUID(as_uuid=True), 
         ForeignKey("pages.id", ondelete="CASCADE")
     )
-    
-    # Authorship
     created_by_id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), 
         ForeignKey("users.id"),
@@ -111,21 +109,13 @@ class Page(Base, TimestampMixin):
     # Status
     is_published: Mapped[bool] = mapped_column(Boolean, default=False)
     is_archived: Mapped[bool] = mapped_column(Boolean, default=False)
-    
-    # Collaboration
     collaboration_enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    
+    # Versioning
     version: Mapped[int] = mapped_column(Integer, default=1)
     
     # Search
-    content_text: Mapped[Optional[str]] = mapped_column(Text)  # Extracted text for search
-    
-    # Indexes
-    __table_args__ = (
-        Index("idx_pages_workspace_id", "workspace_id"),
-        Index("idx_pages_parent_id", "parent_id"),
-        Index("idx_pages_created_by_id", "created_by_id"),
-        Index("idx_pages_slug", "slug"),
-    )
+    content_text: Mapped[Optional[str]] = mapped_column(Text)  # Plain text for search
     
     def __repr__(self):
         return f"<Page {self.title}>"
@@ -146,24 +136,15 @@ class Block(Base, TimestampMixin):
         ForeignKey("pages.id", ondelete="CASCADE"),
         nullable=False
     )
-    
-    # Block structure
-    type: Mapped[str] = mapped_column(String(50), nullable=False)  # paragraph, heading, database, etc.
+    type: Mapped[str] = mapped_column(String(50), nullable=False)
     data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     properties: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
-    position: Mapped[int] = mapped_column(Integer, default=0)
     
     # Hierarchy
+    position: Mapped[int] = mapped_column(Integer, default=0)
     parent_block_id: Mapped[Optional[uuid.UUID]] = mapped_column(
         UUID(as_uuid=True), 
         ForeignKey("blocks.id", ondelete="CASCADE")
-    )
-    
-    # Indexes
-    __table_args__ = (
-        Index("idx_blocks_page_id", "page_id"),
-        Index("idx_blocks_parent_block_id", "parent_block_id"),
-        Index("idx_blocks_type", "type"),
     )
     
     def __repr__(self):
@@ -171,7 +152,7 @@ class Block(Base, TimestampMixin):
 
 
 class Database(Base, TimestampMixin):
-    """Database model for structured data blocks."""
+    """Database model for structured data."""
     
     __tablename__ = "databases"
     
@@ -185,18 +166,16 @@ class Database(Base, TimestampMixin):
         ForeignKey("pages.id", ondelete="CASCADE"),
         nullable=False
     )
-    
-    # Database structure
     name: Mapped[str] = mapped_column(String(255), nullable=False)
-    schema: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)  # Column definitions
-    views: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list)  # View configurations
+    schema: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    views: Mapped[List[Dict[str, Any]]] = mapped_column(JSON, default=list)
     
     def __repr__(self):
         return f"<Database {self.name}>"
 
 
 class DatabaseRow(Base, TimestampMixin):
-    """Database row model."""
+    """Database row model for structured data entries."""
     
     __tablename__ = "database_rows"
     
@@ -210,15 +189,154 @@ class DatabaseRow(Base, TimestampMixin):
         ForeignKey("databases.id", ondelete="CASCADE"),
         nullable=False
     )
-    
-    # Row data
     data: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
     position: Mapped[int] = mapped_column(Integer, default=0)
     
-    # Indexes
-    __table_args__ = (
-        Index("idx_database_rows_database_id", "database_id"),
-    )
-    
     def __repr__(self):
         return f"<DatabaseRow {self.id}>"
+
+
+class Comment(Base, TimestampMixin):
+    """Comment model for collaboration."""
+    
+    __tablename__ = "comments"
+    
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    
+    # Relationships
+    author_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("users.id"),
+        nullable=False
+    )
+    page_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("pages.id", ondelete="CASCADE")
+    )
+    block_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("blocks.id", ondelete="CASCADE")
+    )
+    
+    # Threading
+    parent_comment_id: Mapped[Optional[uuid.UUID]] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("comments.id", ondelete="CASCADE")
+    )
+    
+    # Status
+    is_resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    
+    def __repr__(self):
+        return f"<Comment {self.id}>"
+
+
+class Permission(Base, TimestampMixin):
+    """Permission model for access control."""
+    
+    __tablename__ = "permissions"
+    
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    resource_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'workspace', 'page', etc.
+    permission: Mapped[str] = mapped_column(String(50), nullable=False)  # 'read', 'write', 'admin'
+    
+    def __repr__(self):
+        return f"<Permission {self.user_id} {self.permission} {self.resource_type}>"
+
+
+class Asset(Base, TimestampMixin):
+    """Asset model for file uploads."""
+    
+    __tablename__ = "assets"
+    
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    original_filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    mime_type: Mapped[str] = mapped_column(String(100), nullable=False)
+    size: Mapped[int] = mapped_column(Integer, nullable=False)
+    
+    # Relationships
+    uploaded_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("users.id"),
+        nullable=False
+    )
+    workspace_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("workspaces.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    
+    # Storage
+    storage_path: Mapped[str] = mapped_column(String(500), nullable=False)
+    public_url: Mapped[Optional[str]] = mapped_column(String(500))
+    
+    def __repr__(self):
+        return f"<Asset {self.filename}>"
+
+
+class ShareLink(Base, TimestampMixin):
+    """Share link model for public access."""
+    
+    __tablename__ = "share_links"
+    
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        primary_key=True, 
+        default=uuid.uuid4
+    )
+    token: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
+    
+    # Relationships
+    page_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("pages.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), 
+        ForeignKey("users.id"),
+        nullable=False
+    )
+    
+    # Settings
+    permission: Mapped[str] = mapped_column(String(50), default="read")  # 'read', 'comment', 'edit'
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    expires_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    
+    def __repr__(self):
+        return f"<ShareLink {self.token}>"
+
+
+# Indexes for performance
+Index('idx_pages_workspace_id', Page.workspace_id)
+Index('idx_pages_parent_id', Page.parent_id)
+Index('idx_pages_slug', Page.slug)
+Index('idx_blocks_page_id', Block.page_id)
+Index('idx_blocks_parent_block_id', Block.parent_block_id)
+Index('idx_blocks_type', Block.type)
+Index('idx_database_rows_database_id', DatabaseRow.database_id)
+Index('idx_permissions_resource', Permission.resource_id, Permission.resource_type)
+Index('idx_permissions_user', Permission.user_id)
+Index('idx_comments_page_id', Comment.page_id)
+Index('idx_comments_block_id', Comment.block_id)
+Index('idx_assets_workspace_id', Asset.workspace_id)

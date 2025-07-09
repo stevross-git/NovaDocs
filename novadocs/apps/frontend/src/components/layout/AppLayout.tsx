@@ -54,7 +54,7 @@ export default function AppLayout({ children }: AppLayoutProps) {
   const isActive = (href: string) => pathname === href
 
   return (
-    <div className="min-h-screen bg-gray-50">
+    <div className="h-screen flex bg-gray-50">
       {/* Mobile sidebar backdrop */}
       {sidebarOpen && (
         <div 
@@ -67,37 +67,35 @@ export default function AppLayout({ children }: AppLayoutProps) {
       <div className={`fixed inset-y-0 left-0 z-50 w-64 bg-white border-r border-gray-200 transform transition-transform duration-300 ease-in-out lg:translate-x-0 lg:static lg:inset-0 ${
         sidebarOpen ? 'translate-x-0' : '-translate-x-full'
       }`}>
-        <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
-          <div className="flex items-center">
-            <div className="flex-shrink-0">
-              <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">N</span>
+        <div className="flex flex-col h-full">
+          {/* Logo/Header */}
+          <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
+            <div className="flex items-center gap-2">
+              <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center">
+                <FileText className="h-5 w-5 text-white" />
               </div>
+              <span className="font-semibold text-lg">NovaDocs</span>
             </div>
-            <div className="ml-3">
-              <h1 className="text-lg font-semibold text-gray-900">NovaDocs</h1>
-            </div>
+            <button
+              onClick={() => setSidebarOpen(false)}
+              className="lg:hidden text-gray-500 hover:text-gray-700"
+            >
+              <X className="h-5 w-5" />
+            </button>
           </div>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="lg:hidden text-gray-500 hover:text-gray-700"
-          >
-            <X className="h-6 w-6" />
-          </button>
-        </div>
 
-        <div className="flex-1 flex flex-col overflow-y-auto">
-          <nav className="flex-1 px-2 py-4 space-y-1">
+          {/* Navigation */}
+          <nav className="flex-1 px-4 py-4 space-y-1 overflow-y-auto">
             {navigation.map((item) => {
               const Icon = item.icon
               return (
                 <Link
                   key={item.name}
                   href={item.href}
-                  className={`group flex items-center px-2 py-2 text-sm font-medium rounded-md transition-colors ${
+                  className={`flex items-center px-3 py-2 text-sm font-medium rounded-md transition-colors ${
                     isActive(item.href)
                       ? 'bg-blue-100 text-blue-700'
-                      : 'text-gray-700 hover:bg-gray-100 hover:text-gray-900'
+                      : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
                   }`}
                   onClick={() => setSidebarOpen(false)}
                 >
@@ -106,14 +104,12 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 </Link>
               )
             })}
-          </nav>
 
-          {/* Recent Pages Section */}
-          <div className="px-2 pb-4">
-            <div className="border-t border-gray-200 pt-4">
+            {/* Folders Section */}
+            <div className="pt-4">
               <button
                 onClick={() => setFoldersExpanded(!foldersExpanded)}
-                className="flex items-center w-full px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md"
+                className="flex items-center w-full px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 rounded-md"
               >
                 {foldersExpanded ? (
                   <ChevronDown className="mr-2 h-4 w-4" />
@@ -127,56 +123,23 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 )}
                 Folders
               </button>
-
+              
               {foldersExpanded && (
-                <div className="mt-2 space-y-2">
+                <div className="mt-2 space-y-1">
                   {folders.map((folder) => (
-                    <div key={folder.id} className="px-2">
-                      <div className="flex items-center justify-between">
-                        <Link
-                          href={`/folders/${folder.id}`}
-                          className="text-sm text-gray-700 hover:underline"
-                          onClick={() => setSidebarOpen(false)}
-                        >
-                          {folder.name}
-                        </Link>
-                        <button
-                          onClick={() => {
-                            const name = prompt('Rename folder', folder.name)
-                            if (name) renameFolder(folder.id, name)
-                          }}
-                          className="text-gray-500 hover:text-gray-700"
-                        >
-                          <Pencil className="h-3 w-3" />
-                        </button>
-                      </div>
-                      {folder.pages.length > 0 && (
-                        <div className="ml-4 mt-1 space-y-1">
-                          {folder.pages.map((p) => (
-                            <Link
-                              key={p.id}
-                              href={p.href}
-                              className="block text-xs text-gray-600 hover:underline"
-                              onClick={() => setSidebarOpen(false)}
-                            >
-                              {p.title}
-                            </Link>
-                          ))}
-                        </div>
-                      )}
+                    <div key={folder.id} className="px-4 py-2 text-sm text-gray-600">
+                      {folder.name}
                     </div>
                   ))}
                 </div>
               )}
             </div>
-          </div>
 
-          {/* Recent Pages Section */}
-          <div className="px-2 pb-4">
-            <div className="border-t border-gray-200 pt-4">
+            {/* Recent Pages Section */}
+            <div className="pt-4">
               <button
                 onClick={() => setPagesExpanded(!pagesExpanded)}
-                className="flex items-center w-full px-2 py-2 text-sm font-medium text-gray-700 hover:bg-gray-100 rounded-md"
+                className="flex items-center w-full px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 rounded-md"
               >
                 {pagesExpanded ? (
                   <ChevronDown className="mr-2 h-4 w-4" />
@@ -207,14 +170,14 @@ export default function AppLayout({ children }: AppLayoutProps) {
                 </div>
               )}
             </div>
-          </div>
+          </nav>
 
           {/* Quick Actions */}
-          <div className="px-2 pb-4">
+          <div className="px-4 pb-4">
             <div className="border-t border-gray-200 pt-4">
               <Link
                 href="/editor"
-                className="flex items-center w-full px-2 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
+                className="flex items-center w-full px-3 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-md transition-colors"
                 onClick={() => setSidebarOpen(false)}
               >
                 <Plus className="mr-2 h-4 w-4" />
@@ -225,9 +188,9 @@ export default function AppLayout({ children }: AppLayoutProps) {
         </div>
       </div>
 
-      {/* Main content */}
-      <div className="lg:ml-64">
-        {/* Top navigation */}
+      {/* Main content area */}
+      <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Top navigation bar for mobile */}
         <div className="bg-white border-b border-gray-200 lg:hidden">
           <div className="flex items-center justify-between px-4 py-3">
             <button
@@ -241,8 +204,8 @@ export default function AppLayout({ children }: AppLayoutProps) {
           </div>
         </div>
 
-        {/* Page content */}
-        <main className="flex-1">
+        {/* Page content - This is the key fix */}
+        <main className="flex-1 overflow-auto bg-gradient-to-br from-blue-50 to-indigo-100">
           {children}
         </main>
       </div>

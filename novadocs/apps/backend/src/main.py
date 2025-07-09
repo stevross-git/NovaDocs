@@ -1,4 +1,4 @@
-"""Simplified FastAPI application without database."""
+"""FastAPI application with full database integration."""
 
 import logging
 from contextlib import asynccontextmanager
@@ -9,6 +9,8 @@ import json
 
 from src.core.config import settings
 from src.core.redis import init_redis, cleanup_redis, redis_manager
+from src.core.database import init_db, engine
+from src.api.v1.pages import router as pages_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -23,11 +25,22 @@ async def lifespan(app: FastAPI):
     # Initialize Redis (non-blocking)
     await init_redis()
     
+    # Initialize Database
+    logger.info("📊 Initializing database...")
+    try:
+        await init_db(engine)
+        logger.info("✅ Database initialized successfully")
+    except Exception as e:
+        logger.error(f"❌ Database initialization failed: {e}")
+        # Don't fail the startup, continue with warning
+        logger.warning("⚠️  Continuing without database - some features may not work")
+    
     logger.info("✅ NovaDocs application started successfully")
     yield
     
     logger.info("Shutting down NovaDocs application...")
     await cleanup_redis()
+    await engine.dispose()
     logger.info("✅ NovaDocs application shutdown complete")
 
 
@@ -50,6 +63,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include routers
+app.include_router(pages_router)
+
 
 # Health check endpoint
 @app.get("/health")
@@ -64,12 +80,25 @@ async def health_check():
         redis_status = f"unhealthy: {str(e)}"
         logger.error(f"Redis health check failed: {e}")
     
+    # Test Database
+    database_status = "healthy"
+    try:
+        from src.core.database import get_db
+        from sqlalchemy import text
+        async with get_db() as db:
+            await db.execute(text("SELECT 1"))
+        database_status = "healthy"
+    except Exception as e:
+        database_status = f"unhealthy: {str(e)}"
+        logger.error(f"Database health check failed: {e}")
+    
     return {
         "status": "healthy",
         "version": "1.0.0",
         "environment": settings.ENVIRONMENT,
+        "timestamp": "2025-01-01T00:00:00Z",
         "services": {
-            "database": "skipped",
+            "database": database_status,
             "redis": redis_status,
             "collaboration": "ready",
         }
@@ -80,98 +109,27 @@ async def health_check():
 async def root():
     """Root endpoint."""
     return {
-        "message": "Welcome to NovaDocs API",
+        "message": "NovaDocs API",
         "version": "1.0.0",
         "docs": "/docs",
-        "features": {
-            "real_time_collaboration": settings.FEATURE_REAL_TIME_COLLABORATION,
-            "offline_support": settings.FEATURE_OFFLINE_SUPPORT,
-        }
+        "graphql": "/graphql",
+        "health": "/health"
     }
 
 
-# Mock pages data with Redis caching
-MOCK_PAGES = {
-    "getting-started": {
-        "id": "getting-started",
-        "title": "Getting Started",
-        "content": "<h1>Welcome to NovaDocs!</h1><p>Start typing or use / for commands...</p>",
-        "created_at": "2024-01-01T00:00:00Z",
-        "updated_at": "2024-01-01T00:00:00Z",
-        "collaboration_enabled": True,
-        "version": 1
-    },
-    "api-docs": {
-        "id": "api-docs",
-        "title": "API Documentation",
-        "content": "<h1>API Documentation</h1><p>Complete API reference.</p>",
-        "created_at": "2024-01-02T00:00:00Z",
-        "updated_at": "2024-01-02T00:00:00Z",
-        "collaboration_enabled": True,
-        "version": 1
-    },
-    "team-guidelines": {
-        "id": "team-guidelines",
-        "title": "Team Guidelines",
-        "content": "<h1>Team Guidelines</h1><p>Our collaboration best practices.</p>",
-        "created_at": "2024-01-03T00:00:00Z",
-        "updated_at": "2024-01-03T00:00:00Z",
-        "collaboration_enabled": True,
-        "version": 1
-    }
-}
+# Legacy compatibility endpoints for the existing frontend
+MOCK_PAGES = {}
 
 
 @app.get("/api/v1/pages")
-async def get_pages():
-    """Get all pages with Redis caching."""
-    try:
-        # Try cache first
-        cached_pages = await redis_manager.get_cache("all_pages")
-        if cached_pages:
-            return cached_pages
-        
-        pages_data = list(MOCK_PAGES.values())
-        
-        # Cache for 5 minutes
-        await redis_manager.set_cache("all_pages", pages_data, 300)
-        return pages_data
-        
-    except Exception as e:
-        logger.error(f"Error getting pages: {e}")
-        return list(MOCK_PAGES.values())
-
-
-@app.get("/api/v1/pages/{page_id}")
-async def get_page(page_id: str):
-    """Get a specific page with Redis caching."""
-    try:
-        # Try cache first
-        cached_page = await redis_manager.get_cache(f"page:{page_id}")
-        if cached_page:
-            return cached_page
-        
-        if page_id in MOCK_PAGES:
-            page_data = MOCK_PAGES[page_id]
-            # Cache for 10 minutes
-            await redis_manager.set_cache(f"page:{page_id}", page_data, 600)
-            return page_data
-        
-        return JSONResponse(
-            status_code=404,
-            content={"error": "Page not found"}
-        )
-        
-    except Exception as e:
-        logger.error(f"Error getting page {page_id}: {e}")
-        if page_id in MOCK_PAGES:
-            return MOCK_PAGES[page_id]
-        return JSONResponse(status_code=404, content={"error": "Page not found"})
+async def legacy_list_pages():
+    """Legacy endpoint for backward compatibility."""
+    return {"pages": list(MOCK_PAGES.values())}
 
 
 @app.post("/api/v1/pages")
-async def create_or_update_page(request: Request):
-    """Create or update a page with Redis caching."""
+async def legacy_create_page(request: Request):
+    """Legacy endpoint for backward compatibility."""
     try:
         data = await request.json()
         page_id = data.get("id", f"page-{len(MOCK_PAGES) + 1}")
@@ -203,6 +161,18 @@ async def create_or_update_page(request: Request):
         return JSONResponse(
             status_code=500,
             content={"error": f"Failed to save page: {str(e)}"}
+        )
+
+
+@app.get("/api/v1/pages/{page_id}")
+async def legacy_get_page(page_id: str):
+    """Legacy endpoint for backward compatibility."""
+    if page_id in MOCK_PAGES:
+        return {"page": MOCK_PAGES[page_id]}
+    else:
+        return JSONResponse(
+            status_code=404,
+            content={"error": "Page not found"}
         )
 
 
@@ -250,79 +220,78 @@ async def websocket_collaboration(websocket, doc_id: str):
             
             elif message_type == "cursor_update":
                 # Handle cursor position updates
-                cursor_data = {
-                    "user_id": message.get("user_id", "anonymous"),
-                    "position": message.get("position"),
-                    "selection": message.get("selection"),
-                    "timestamp": "2024-01-01T00:00:00Z"
-                }
+                user_id = message.get("user_id", "anonymous")
+                cursor_data = message.get("cursor", {})
                 
                 await redis_manager.set_cache(
-                    f"cursor:{doc_id}:{message.get('user_id')}", 
-                    cursor_data, 
-                    60
+                    f"cursor:{doc_id}:{user_id}",
+                    {
+                        "position": cursor_data.get("position", 0),
+                        "selection": cursor_data.get("selection", {}),
+                        "timestamp": "2024-01-01T00:00:00Z"
+                    },
+                    300  # 5 minutes TTL
                 )
                 
+                # Broadcast cursor update to other users
                 await websocket.send_text(json.dumps({
-                    "type": "cursor_update_ack",
+                    "type": "cursor_broadcast",
                     "doc_id": doc_id,
-                    "cursor_data": cursor_data
-                }))
-            
-            elif message_type == "presence_update":
-                # Handle user presence
-                presence_data = {
-                    "user_id": message.get("user_id", "anonymous"),
-                    "user_name": message.get("user_name", "Anonymous"),
-                    "user_color": message.get("user_color", "#3B82F6"),
-                    "is_active": True,
-                    "timestamp": "2024-01-01T00:00:00Z"
-                }
-                
-                await redis_manager.set_cache(
-                    f"presence:{doc_id}:{message.get('user_id')}", 
-                    presence_data, 
-                    120
-                )
-                
-                await websocket.send_text(json.dumps({
-                    "type": "presence_update_ack",
-                    "doc_id": doc_id,
-                    "presence_data": presence_data
+                    "user_id": user_id,
+                    "cursor": cursor_data
                 }))
             
             elif message_type == "ping":
-                # Handle heartbeat
                 await websocket.send_text(json.dumps({
                     "type": "pong",
                     "timestamp": "2024-01-01T00:00:00Z"
                 }))
             
             else:
-                # Echo back unknown messages
-                await websocket.send_text(json.dumps({
-                    "type": "echo",
-                    "original_message": message,
-                    "doc_id": doc_id
-                }))
+                logger.warning(f"Unknown message type: {message_type}")
                 
     except Exception as e:
-        logger.error(f"WebSocket error for document {doc_id}: {e}")
+        logger.error(f"WebSocket error for doc {doc_id}: {e}")
     finally:
-        # Cleanup presence on disconnect
-        try:
-            await redis_manager.delete_cache(f"presence:{doc_id}:*")
-        except:
-            pass
-        await websocket.close()
+        logger.info(f"WebSocket connection closed for doc {doc_id}")
+
+
+# GraphQL mock endpoint for testing
+@app.post("/graphql")
+async def graphql_endpoint(request: Request):
+    """GraphQL endpoint mock for testing."""
+    try:
+        data = await request.json()
+        query = data.get("query", "")
+        
+        if "me" in query:
+            return {
+                "data": {
+                    "me": {
+                        "id": "1",
+                        "name": "Demo User",
+                        "email": "demo@novadocs.com"
+                    }
+                }
+            }
+        
+        return {
+            "data": {},
+            "errors": [{"message": "Query not implemented yet"}]
+        }
+        
+    except Exception as e:
+        logger.error(f"GraphQL error: {e}")
+        return {
+            "errors": [{"message": f"GraphQL error: {str(e)}"}]
+        }
 
 
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(
-        "src.main:app",
-        host=settings.HOST,
-        port=settings.PORT,
-        reload=settings.DEBUG,
-        log_level="info"
+        "src.main:app", 
+        host="0.0.0.0", 
+        port=8000, 
+        reload=True
     )
