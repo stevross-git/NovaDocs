@@ -1,4 +1,3 @@
-# apps/frontend/src/app/globals.css
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -56,5 +55,62 @@
   }
   body {
     @apply bg-background text-foreground;
+  }
+}
+
+/* Custom editor styles */
+.ProseMirror {
+  outline: none;
+  caret-color: rgb(59 130 246);
+}
+
+.ProseMirror p.is-editor-empty:first-child::before {
+  content: attr(data-placeholder);
+  float: left;
+  color: #adb5bd;
+  pointer-events: none;
+  height: 0;
+}
+
+/* Database view styles */
+.database-view-wrapper {
+  margin: 1rem 0;
+}
+
+.database-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.database-table th,
+.database-table td {
+  border: 1px solid #e5e7eb;
+  padding: 8px 12px;
+  text-align: left;
+}
+
+.database-table th {
+  background-color: #f9fafb;
+  font-weight: 600;
+}
+
+.database-table tr:hover {
+  background-color: #f9fafb;
+}
+
+/* Loading animations */
+.loading-spinner {
+  @apply animate-spin rounded-full border-2 border-gray-200 border-t-blue-500;
+}
+
+.loading-skeleton {
+  @apply animate-pulse bg-gray-200 rounded;
+}
+
+/* Responsive design helpers */
+@media (max-width: 768px) {
+  .database-table {
+    font-size: 12px;
   }
 }
