@@ -10,7 +10,13 @@ app.use(express.json());
 
 // Mock data storage
 let pages = [];
+let users = [
+  { id: 1, name: 'Alice Doe', email: 'alice@example.com', avatar_url: 'https://i.pravatar.cc/100?u=alice' },
+  { id: 2, name: 'Bob Smith', email: 'bob@example.com', avatar_url: 'https://i.pravatar.cc/100?u=bob' },
+  { id: 3, name: 'Charlie Brown', email: 'charlie@example.com', avatar_url: 'https://i.pravatar.cc/100?u=charlie' }
+];
 let currentId = 1;
+let userId = users.length + 1;
 
 // Health check endpoints
 const healthResponse = {
@@ -93,6 +99,24 @@ app.get('/api/v1/pages/:id', (req, res) => {
   }
 });
 
+// Users API
+app.get('/api/v1/users', (req, res) => {
+  console.log('👥 Getting all users');
+  res.json({ users });
+});
+
+app.post('/api/v1/users', (req, res) => {
+  console.log('👥 Creating new user:', req.body);
+  const user = {
+    id: userId++,
+    name: req.body.name,
+    email: req.body.email,
+    avatar_url: `https://i.pravatar.cc/100?u=${encodeURIComponent(req.body.email)}`
+  };
+  users.push(user);
+  res.json({ user, message: 'User created successfully' });
+});
+
 // File upload endpoint
 app.post('/api/v1/upload', (req, res) => {
   console.log('📁 File upload requested');
@@ -108,7 +132,7 @@ app.post('/api/v1/upload', (req, res) => {
 app.get('/api/v1/stats', (req, res) => {
   res.json({
     pages: pages.length,
-    users: 3,
+    users: users.length,
     workspaces: 1,
     storage_used: '12.5 MB'
   });
@@ -120,4 +144,5 @@ app.listen(8000, () => {
   console.log('📊 API Health check: http://localhost:8000/api/health');
   console.log('🎯 GraphQL: http://localhost:8000/graphql');
   console.log('📄 Pages API: http://localhost:8000/api/v1/pages');
+  console.log('👥 Users API: http://localhost:8000/api/v1/users');
 });

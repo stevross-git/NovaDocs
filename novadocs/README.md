@@ -9,6 +9,7 @@ A modern, self-hosted collaborative wiki platform built with Next.js, FastAPI, a
 - 📊 Database views (Table, Kanban, Calendar)
 - 🔍 Full-text and semantic search
 - 🔒 Role-based permissions
+- 👥 User management interface
 - 📱 Mobile-responsive design
 - 🚀 Fast and scalable architecture
 
@@ -28,6 +29,7 @@ npm run dev
 ## Development
 
 - Frontend: http://localhost:3000
+- Users page: http://localhost:3000/users
 - Backend API: http://localhost:8000
 - GraphQL Playground: http://localhost:8000/graphql
 - PostgreSQL: localhost:5432
