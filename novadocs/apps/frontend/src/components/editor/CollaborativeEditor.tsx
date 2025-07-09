@@ -1,11 +1,11 @@
-// frontend/src/components/editor/CollaborativeEditor.tsx
-import React, { useEffect, useState, useCallback } from 'react'
+// apps/frontend/src/components/editor/CollaborativeEditor.tsx
+import React, { useEffect, useState, useCallback, useRef } from 'react'
 import { useEditor, EditorContent, Editor } from '@tiptap/react'
 import StarterKit from '@tiptap/starter-kit'
 import Collaboration from '@tiptap/extension-collaboration'
 import CollaborationCursor from '@tiptap/extension-collaboration-cursor'
-import { HocuspocusProvider } from '@hocuspocus/provider'
 import * as Y from 'yjs'
+import { WebsocketProvider } from 'y-websocket'
 import { IndexeddbPersistence } from 'y-indexeddb'
 import { cn } from '@/lib/utils'
 import { useAuth } from '@/hooks/useAuth'
@@ -14,6 +14,7 @@ import { SlashCommand } from './extensions/SlashCommand'
 import { EditorToolbar } from './EditorToolbar'
 import { EditorBubbleMenu } from './EditorBubbleMenu'
 import { CollaborationCursors } from './CollaborationCursors'
+import { toast } from 'sonner'
 
 interface CollaborativeEditorProps {
   pageId: string
@@ -21,6 +22,15 @@ interface CollaborativeEditorProps {
   onUpdate?: (content: string) => void
   className?: string
   editable?: boolean
+  workspace?: string
+}
+
+interface CollaborationUser {
+  id: string
+  name: string
+  color: string
+  cursor_position?: number
+  selection?: any
 }
 
 export function CollaborativeEditor({
@@ -28,16 +38,23 @@ export function CollaborativeEditor({
   initialContent = '',
   onUpdate,
   className,
-  editable = true
+  editable = true,
+  workspace = 'default'
 }: CollaborativeEditorProps) {
   const { user } = useAuth()
-  const [provider, setProvider] = useState<HocuspocusProvider | null>(null)
+  const [provider, setProvider] = useState<WebsocketProvider | null>(null)
   const [ydoc, setYdoc] = useState<Y.Doc | null>(null)
   const [isOnline, setIsOnline] = useState(navigator.onLine)
-  const [collaborators, setCollaborators] = useState<Array<{ id: string; name: string; color: string }>>([])
+  const [isConnected, setIsConnected] = useState(false)
+  const [collaborators, setCollaborators] = useState<CollaborationUser[]>([])
+  const [connectionStatus, setConnectionStatus] = useState<'connecting' | 'connected' | 'disconnected'>('connecting')
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout>()
+  const retryCountRef = useRef(0)
 
-  // Initialize Yjs document and provider
+  // Initialize Yjs document and providers
   useEffect(() => {
+    if (!user) return
+
     const doc = new Y.Doc()
     setYdoc(doc)
 
@@ -45,39 +62,95 @@ export function CollaborativeEditor({
     const indexeddbProvider = new IndexeddbPersistence(`novadocs-${pageId}`, doc)
     
     // WebSocket provider for real-time collaboration
-    const websocketProvider = new HocuspocusProvider({
-      url: process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000',
-      name: `page-${pageId}`,
-      document: doc,
-      token: user?.token || '',
-      onConnect: () => {
-        console.log('Connected to collaboration server')
-        setIsOnline(true)
-      },
-      onDisconnect: () => {
-        console.log('Disconnected from collaboration server')
-        setIsOnline(false)
-      },
-      onAwarenessChange: ({ states }) => {
-        const users = Array.from(states.values())
-          .filter((state: any) => state.user)
-          .map((state: any) => ({
-            id: state.user.id,
-            name: state.user.name,
-            color: state.user.color
-          }))
-        setCollaborators(users)
+    const websocketProvider = new WebsocketProvider(
+      process.env.NEXT_PUBLIC_WS_URL || 'ws://localhost:8000/ws',
+      `collaboration/${pageId}`,
+      doc,
+      {
+        params: {
+          token: user.token
+        }
       }
+    )
+
+    // Connection event handlers
+    websocketProvider.on('status', ({ status }: { status: string }) => {
+      setConnectionStatus(status as any)
+      setIsConnected(status === 'connected')
+      
+      if (status === 'connected') {
+        setIsOnline(true)
+        retryCountRef.current = 0
+        toast.success('Connected to collaboration server')
+      } else if (status === 'disconnected') {
+        setIsOnline(false)
+        handleReconnection()
+        toast.error('Disconnected from collaboration server')
+      }
+    })
+
+    websocketProvider.on('connection-error', (error: any) => {
+      console.error('WebSocket connection error:', error)
+      setIsOnline(false)
+      handleReconnection()
+      toast.error('Connection error. Trying to reconnect...')
+    })
+
+    // Awareness (user presence) handling
+    websocketProvider.awareness.on('change', () => {
+      const states = Array.from(websocketProvider.awareness.getStates().values())
+      const users = states
+        .filter((state: any) => state.user && state.user.id !== user.id)
+        .map((state: any) => ({
+          id: state.user.id,
+          name: state.user.name,
+          color: state.user.color,
+          cursor_position: state.cursor?.position,
+          selection: state.cursor?.selection
+        }))
+      
+      setCollaborators(users)
+    })
+
+    // Set local user info
+    websocketProvider.awareness.setLocalStateField('user', {
+      id: user.id,
+      name: user.name,
+      color: getUserColor(user.id),
     })
 
     setProvider(websocketProvider)
 
+    // Cleanup function
     return () => {
-      indexeddbProvider.destroy()
+      clearTimeout(reconnectTimeoutRef.current)
       websocketProvider.destroy()
+      indexeddbProvider.destroy()
       doc.destroy()
     }
   }, [pageId, user])
+
+  // Handle reconnection logic
+  const handleReconnection = useCallback(() => {
+    const maxRetries = 5
+    const baseDelay = 1000 // 1 second
+    
+    if (retryCountRef.current >= maxRetries) {
+      toast.error('Maximum reconnection attempts reached')
+      return
+    }
+
+    const delay = Math.min(baseDelay * Math.pow(2, retryCountRef.current), 30000) // Max 30 seconds
+    retryCountRef.current++
+
+    clearTimeout(reconnectTimeoutRef.current)
+    reconnectTimeoutRef.current = setTimeout(() => {
+      if (provider && !isConnected) {
+        toast.info(`Reconnecting... (attempt ${retryCountRef.current}/${maxRetries})`)
+        provider.connect()
+      }
+    }, delay)
+  }, [provider, isConnected])
 
   // Initialize editor
   const editor = useEditor({
@@ -87,38 +160,80 @@ export function CollaborativeEditor({
       }),
       Collaboration.configure({
         document: ydoc,
+        field: 'content', // Use 'content' field in Yjs document
       }),
       CollaborationCursor.configure({
         provider: provider,
         user: user ? {
           name: user.name,
-          color: `#${Math.floor(Math.random() * 16777215).toString(16)}`,
+          color: getUserColor(user.id),
         } : undefined,
       }),
-      DatabaseView,
-      SlashCommand,
+      DatabaseView.configure({
+        workspace,
+      }),
+      SlashCommand.configure({
+        suggestion: {
+          items: ({ query }) => getSlashCommandItems(query),
+          render: () => ({
+            onStart: (props) => {
+              // Show slash command menu
+            },
+            onUpdate: (props) => {
+              // Update slash command menu
+            },
+            onExit: () => {
+              // Hide slash command menu
+            },
+          }),
+        },
+      }),
     ],
     content: initialContent,
     editable,
     onUpdate: ({ editor }) => {
       const content = editor.getHTML()
       onUpdate?.(content)
+      
+      // Update cursor position in awareness
+      if (provider) {
+        const selection = editor.state.selection
+        provider.awareness.setLocalStateField('cursor', {
+          position: selection.from,
+          selection: {
+            from: selection.from,
+            to: selection.to
+          }
+        })
+      }
     },
-    editorProps: {
-      attributes: {
-        class: cn(
-          'prose prose-sm sm:prose lg:prose-lg xl:prose-2xl mx-auto focus:outline-none',
-          'min-h-[500px] px-4 py-2',
-          className
-        ),
-      },
+    onSelectionUpdate: ({ editor }) => {
+      // Update cursor position for real-time collaboration
+      if (provider) {
+        const selection = editor.state.selection
+        provider.awareness.setLocalStateField('cursor', {
+          position: selection.from,
+          selection: {
+            from: selection.from,
+            to: selection.to
+          }
+        })
+      }
     },
   }, [ydoc, provider, user, editable])
 
-  // Handle online/offline events
+  // Handle online/offline status
   useEffect(() => {
-    const handleOnline = () => setIsOnline(true)
-    const handleOffline = () => setIsOnline(false)
+    const handleOnline = () => {
+      setIsOnline(true)
+      if (provider) {
+        provider.connect()
+      }
+    }
+
+    const handleOffline = () => {
+      setIsOnline(false)
+    }
 
     window.addEventListener('online', handleOnline)
     window.addEventListener('offline', handleOffline)
@@ -127,353 +242,140 @@ export function CollaborativeEditor({
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [])
+  }, [provider])
 
-  // Handle keyboard shortcuts
-  const handleKeyDown = useCallback((event: KeyboardEvent) => {
-    if (!editor) return
-
-    // Slash command
-    if (event.key === '/' && editor.isActive('paragraph') && editor.isEmpty) {
-      event.preventDefault()
-      // Trigger slash command menu
-      editor.commands.insertContent('/')
-    }
-
-    // Save shortcut
-    if ((event.ctrlKey || event.metaKey) && event.key === 's') {
-      event.preventDefault()
-      // Trigger save
-      onUpdate?.(editor.getHTML())
-    }
-  }, [editor, onUpdate])
-
+  // Periodic ping to keep connection alive
   useEffect(() => {
-    document.addEventListener('keydown', handleKeyDown)
-    return () => document.removeEventListener('keydown', handleKeyDown)
-  }, [handleKeyDown])
+    if (!provider || !isConnected) return
 
-  if (!editor) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500"></div>
-      </div>
-    )
-  }
+    const pingInterval = setInterval(() => {
+      if (provider.ws?.readyState === WebSocket.OPEN) {
+        provider.ws.send(JSON.stringify({ type: 'ping' }))
+      }
+    }, 30000) // Ping every 30 seconds
+
+    return () => clearInterval(pingInterval)
+  }, [provider, isConnected])
 
   return (
-    <div className="relative">
-      {/* Connection status */}
-      <div className="absolute top-2 right-2 z-10">
+    <div className={cn('relative w-full h-full', className)}>
+      {/* Connection Status */}
+      <div className="absolute top-4 right-4 z-10">
         <div className={cn(
-          'flex items-center gap-2 px-3 py-1 rounded-full text-xs font-medium',
-          isOnline 
+          'flex items-center gap-2 px-3 py-1 rounded-full text-sm',
+          connectionStatus === 'connected' 
             ? 'bg-green-100 text-green-800' 
-            : 'bg-orange-100 text-orange-800'
+            : connectionStatus === 'connecting'
+            ? 'bg-yellow-100 text-yellow-800'
+            : 'bg-red-100 text-red-800'
         )}>
           <div className={cn(
             'w-2 h-2 rounded-full',
-            isOnline ? 'bg-green-500' : 'bg-orange-500'
+            connectionStatus === 'connected' 
+              ? 'bg-green-500' 
+              : connectionStatus === 'connecting'
+              ? 'bg-yellow-500 animate-pulse'
+              : 'bg-red-500'
           )} />
-          {isOnline ? 'Online' : 'Offline'}
+          <span>
+            {connectionStatus === 'connected' 
+              ? `Online${collaborators.length > 0 ? ` • ${collaborators.length} user${collaborators.length > 1 ? 's' : ''}` : ''}`
+              : connectionStatus === 'connecting'
+              ? 'Connecting...'
+              : 'Offline'
+            }
+          </span>
         </div>
       </div>
 
-      {/* Collaborators */}
+      {/* Collaboration Cursors */}
       <CollaborationCursors collaborators={collaborators} />
 
-      {/* Editor toolbar */}
-      {editable && <EditorToolbar editor={editor} />}
+      {/* Editor Toolbar */}
+      {editable && (
+        <EditorToolbar 
+          editor={editor}
+          isOnline={isOnline}
+          collaborators={collaborators}
+        />
+      )}
 
-      {/* Editor content */}
-      <div className="relative">
-        <EditorContent editor={editor} />
-        {editable && <EditorBubbleMenu editor={editor} />}
-      </div>
-    </div>
-  )
-}
-
-// frontend/src/components/editor/EditorToolbar.tsx
-import React from 'react'
-import { Editor } from '@tiptap/react'
-import { Button } from '@/components/ui/button'
-import { Separator } from '@/components/ui/separator'
-import {
-  Bold,
-  Italic,
-  Underline,
-  Strikethrough,
-  Code,
-  Heading1,
-  Heading2,
-  Heading3,
-  List,
-  ListOrdered,
-  Quote,
-  Link,
-  Image,
-  Table,
-  Undo,
-  Redo,
-} from 'lucide-react'
-
-interface EditorToolbarProps {
-  editor: Editor
-}
-
-export function EditorToolbar({ editor }: EditorToolbarProps) {
-  if (!editor) return null
-
-  return (
-    <div className="flex items-center gap-1 p-2 border-b bg-gray-50 rounded-t-lg">
-      {/* History */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().undo().run()}
-        disabled={!editor.can().undo()}
-      >
-        <Undo className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().redo().run()}
-        disabled={!editor.can().redo()}
-      >
-        <Redo className="h-4 w-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="mx-2 h-6" />
-
-      {/* Text formatting */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleBold().run()}
-        data-active={editor.isActive('bold')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Bold className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleItalic().run()}
-        data-active={editor.isActive('italic')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Italic className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleStrike().run()}
-        data-active={editor.isActive('strike')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Strikethrough className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleCode().run()}
-        data-active={editor.isActive('code')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Code className="h-4 w-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="mx-2 h-6" />
-
-      {/* Headings */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()}
-        data-active={editor.isActive('heading', { level: 1 })}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Heading1 className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()}
-        data-active={editor.isActive('heading', { level: 2 })}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Heading2 className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
-        data-active={editor.isActive('heading', { level: 3 })}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Heading3 className="h-4 w-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="mx-2 h-6" />
-
-      {/* Lists */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleBulletList().run()}
-        data-active={editor.isActive('bulletList')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <List className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleOrderedList().run()}
-        data-active={editor.isActive('orderedList')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <ListOrdered className="h-4 w-4" />
-      </Button>
-
-      <Separator orientation="vertical" className="mx-2 h-6" />
-
-      {/* Blocks */}
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleBlockquote().run()}
-        data-active={editor.isActive('blockquote')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Quote className="h-4 w-4" />
-      </Button>
-      
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          // Trigger database creation
-          editor.chain().focus().setDatabaseView({ 
-            databaseId: 'new',
-            viewType: 'table' 
-          }).run()
-        }}
-      >
-        <Table className="h-4 w-4" />
-      </Button>
-    </div>
-  )
-}
-
-// frontend/src/components/editor/EditorBubbleMenu.tsx
-import React from 'react'
-import { BubbleMenu, Editor } from '@tiptap/react'
-import { Button } from '@/components/ui/button'
-import { Bold, Italic, Link, Code } from 'lucide-react'
-
-interface EditorBubbleMenuProps {
-  editor: Editor
-}
-
-export function EditorBubbleMenu({ editor }: EditorBubbleMenuProps) {
-  if (!editor) return null
-
-  return (
-    <BubbleMenu
-      editor={editor}
-      tippyOptions={{ duration: 100 }}
-      className="bg-white border border-gray-200 rounded-lg shadow-lg p-1 flex items-center gap-1"
-    >
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleBold().run()}
-        data-active={editor.isActive('bold')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Bold className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleItalic().run()}
-        data-active={editor.isActive('italic')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Italic className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => editor.chain().focus().toggleCode().run()}
-        data-active={editor.isActive('code')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Code className="h-4 w-4" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="sm"
-        onClick={() => {
-          const url = window.prompt('Enter URL:')
-          if (url) {
-            editor.chain().focus().setLink({ href: url }).run()
-          }
-        }}
-        data-active={editor.isActive('link')}
-        className="data-[active=true]:bg-blue-100"
-      >
-        <Link className="h-4 w-4" />
-      </Button>
-    </BubbleMenu>
-  )
-}
-
-// frontend/src/components/editor/CollaborationCursors.tsx
-import React from 'react'
-import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar'
-
-interface Collaborator {
-  id: string
-  name: string
-  color: string
-}
-
-interface CollaborationCursorsProps {
-  collaborators: Collaborator[]
-}
-
-export function CollaborationCursors({ collaborators }: CollaborationCursorsProps) {
-  if (collaborators.length === 0) return null
-
-  return (
-    <div className="absolute top-2 left-2 z-10">
-      <div className="flex items-center gap-2">
-        <span className="text-xs text-gray-600">
-          {collaborators.length} collaborator{collaborators.length !== 1 ? 's' : ''}
-        </span>
-        <div className="flex -space-x-2">
-          {collaborators.slice(0, 3).map((collaborator) => (
-            <Avatar
-              key={collaborator.id}
-              className="w-6 h-6 border-2 border-white"
-              style={{ borderColor: collaborator.color }}
-            >
-              <AvatarFallback className="text-xs">
-                {collaborator.name.slice(0, 2).toUpperCase()}
-              </AvatarFallback>
-            </Avatar>
-          ))}
-          {collaborators.length > 3 && (
-            <div className="w-6 h-6 bg-gray-200 rounded-full border-2 border-white flex items-center justify-center">
-              <span className="text-xs text-gray-600">+{collaborators.length - 3}</span>
-            </div>
+      {/* Editor Content */}
+      <div className="flex-1 overflow-y-auto">
+        <EditorContent 
+          editor={editor}
+          className={cn(
+            'prose prose-sm max-w-none',
+            'focus:outline-none',
+            !editable && 'pointer-events-none'
           )}
-        </div>
+        />
       </div>
+
+      {/* Bubble Menu */}
+      {editable && (
+        <EditorBubbleMenu 
+          editor={editor}
+          isOnline={isOnline}
+        />
+      )}
+
+      {/* Offline Notice */}
+      {!isOnline && (
+        <div className="absolute bottom-4 left-4 bg-orange-100 text-orange-800 px-4 py-2 rounded-lg shadow-lg">
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-orange-500 rounded-full" />
+            <span>You're offline. Changes will sync when reconnected.</span>
+          </div>
+        </div>
+      )}
     </div>
+  )
+}
+
+// Helper functions
+function getUserColor(userId: string): string {
+  const colors = [
+    '#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7',
+    '#DDA0DD', '#98D8C8', '#F7DC6F', '#BB8FCE', '#85C1E9'
+  ]
+  
+  const hash = userId.split('').reduce((acc, char) => acc + char.charCodeAt(0), 0)
+  return colors[hash % colors.length]
+}
+
+function getSlashCommandItems(query: string) {
+  return [
+    {
+      title: 'Heading 1',
+      description: 'Large heading',
+      command: ({ editor, range }) => {
+        editor.chain().focus().deleteRange(range).setHeading({ level: 1 }).run()
+      },
+    },
+    {
+      title: 'Heading 2',
+      description: 'Medium heading',
+      command: ({ editor, range }) => {
+        editor.chain().focus().deleteRange(range).setHeading({ level: 2 }).run()
+      },
+    },
+    {
+      title: 'Bullet List',
+      description: 'Create a bulleted list',
+      command: ({ editor, range }) => {
+        editor.chain().focus().deleteRange(range).toggleBulletList().run()
+      },
+    },
+    {
+      title: 'Database',
+      description: 'Create a database view',
+      command: ({ editor, range }) => {
+        editor.chain().focus().deleteRange(range).insertDatabase().run()
+      },
+    },
+  ].filter(item => 
+    item.title.toLowerCase().includes(query.toLowerCase()) ||
+    item.description.toLowerCase().includes(query.toLowerCase())
   )
 }
