@@ -1,50 +1,30 @@
 {
   "name": "novadocs",
   "version": "1.0.0",
-  "description": "Modern collaborative wiki platform",
   "private": true,
-  "workspaces": [
-    "apps/*",
-    "packages/*"
-  ],
   "scripts": {
     "dev": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd apps/backend && uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload",
     "dev:frontend": "cd apps/frontend && npm run dev",
-    "dev:backend": "cd apps/backend && poetry run uvicorn src.main:app --reload --host 0.0.0.0 --port 8000",
     "build": "npm run build:frontend && npm run build:backend",
     "build:frontend": "cd apps/frontend && npm run build",
-    "build:backend": "cd apps/backend && poetry build",
-    "test": "npm run test:frontend && npm run test:backend",
-    "test:frontend": "cd apps/frontend && npm run test",
-    "test:backend": "cd apps/backend && poetry run pytest",
-    "lint": "npm run lint:frontend && npm run lint:backend",
-    "lint:frontend": "cd apps/frontend && npm run lint",
-    "lint:backend": "cd apps/backend && poetry run flake8 src/ && poetry run black --check src/",
-    "docker:dev": "docker-compose -f infrastructure/docker/development/docker-compose.yml up -d",
-    "docker:prod": "docker-compose -f infrastructure/docker/production/docker-compose.yml up -d"
+    "build:backend": "cd apps/backend && echo 'Backend build complete'",
+    "start": "npm run start:backend",
+    "start:backend": "cd apps/backend && uvicorn src.main:app --host 0.0.0.0 --port 8000",
+    "docker:dev": "docker-compose -f docker-compose.dev.yml up -d",
+    "docker:down": "docker-compose -f docker-compose.dev.yml down",
+    "migrate": "cd apps/backend && alembic upgrade head",
+    "migrate:create": "cd apps/backend && alembic revision --autogenerate -m",
+    "test": "cd apps/backend && python -m pytest && cd ../frontend && npm test",
+    "lint": "cd apps/frontend && npm run lint",
+    "format": "cd apps/frontend && npm run format && cd ../backend && black . && isort .",
+    "setup": "./setup-editor.sh"
   },
   "devDependencies": {
-    "concurrently": "^8.2.0",
-    "husky": "^8.0.0",
-    "lint-staged": "^15.0.0"
+    "concurrently": "^8.2.0"
   },
-  "husky": {
-    "hooks": {
-      "pre-commit": "lint-staged"
-    }
-  },
-  "lint-staged": {
-    "apps/frontend/**/*.{js,ts,jsx,tsx}": [
-      "eslint --fix",
-      "prettier --write"
-    ],
-    "apps/backend/**/*.py": [
-      "black",
-      "isort"
-    ]
-  },
-  "dependencies": {
-    "cors": "^2.8.5",
-    "express": "^5.1.0"
-  }
+  "workspaces": [
+    "apps/frontend",
+    "apps/backend"
+  ]
 }

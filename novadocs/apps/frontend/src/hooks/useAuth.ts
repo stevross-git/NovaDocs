@@ -1,3 +1,4 @@
+// apps/frontend/src/hooks/useAuth.ts
 import { useState, useEffect } from 'react'
 
 interface User {
@@ -5,6 +6,7 @@ interface User {
   name: string
   email: string
   token: string
+  avatar_url?: string
 }
 
 export function useAuth() {
@@ -12,17 +14,50 @@ export function useAuth() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Mock user for development
-    const mockUser: User = {
-      id: '1',
-      name: 'Test User',
-      email: 'test@example.com',
-      token: 'mock-token'
+    // Check for existing session
+    const checkAuth = async () => {
+      try {
+        const response = await fetch('/api/auth/me', {
+          credentials: 'include'
+        })
+        
+        if (response.ok) {
+          const userData = await response.json()
+          setUser(userData)
+        }
+      } catch (error) {
+        console.error('Auth check failed:', error)
+      } finally {
+        setLoading(false)
+      }
     }
-    
-    setUser(mockUser)
-    setLoading(false)
+
+    checkAuth()
   }, [])
 
-  return { user, loading }
+  const login = async (provider: string) => {
+    try {
+      const response = await fetch(`/api/auth/${provider}`)
+      const data = await response.json()
+      
+      // Redirect to OAuth provider
+      window.location.href = data.auth_url
+    } catch (error) {
+      console.error('Login failed:', error)
+    }
+  }
+
+  const logout = async () => {
+    try {
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'include'
+      })
+      setUser(null)
+    } catch (error) {
+      console.error('Logout failed:', error)
+    }
+  }
+
+  return { user, loading, login, logout }
 }

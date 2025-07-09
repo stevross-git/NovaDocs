@@ -1,14 +1,22 @@
 # apps/backend/src/core/config.py
 """
-Updated application configuration with OAuth and additional settings.
+Updated application configuration for Pydantic v2 with pydantic-settings.
 """
 from typing import List, Optional
-from pydantic import BaseSettings, PostgresDsn, RedisDsn, validator, HttpUrl
+from pydantic import field_validator, HttpUrl
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
+import os
 
 
 class Settings(BaseSettings):
     """Application settings."""
+    
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        case_sensitive=True,
+        extra="ignore"
+    )
     
     # Application
     APP_NAME: str = "NovaDocs"
@@ -16,22 +24,23 @@ class Settings(BaseSettings):
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     BASE_URL: str = "http://localhost:8000"
+    ENVIRONMENT: str = "development"
     
     # Security
-    SECRET_KEY: str
-    JWT_SECRET_KEY: str
+    SECRET_KEY: str = "your-super-secret-key-here-minimum-32-chars-change-in-production"
+    JWT_SECRET_KEY: str = "your-jwt-secret-key-here-minimum-32-chars-change-in-production"
     JWT_ALGORITHM: str = "HS256"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 30
     
     # Database
-    DATABASE_URL: PostgresDsn
+    DATABASE_URL: str = "postgresql://novadocs:password@localhost:5432/novadocs"
     DATABASE_ECHO: bool = False
     DATABASE_POOL_SIZE: int = 20
     DATABASE_MAX_OVERFLOW: int = 0
     
     # Redis
-    REDIS_URL: RedisDsn
+    REDIS_URL: str = "redis://localhost:6379/0"
     REDIS_EXPIRE_SECONDS: int = 3600
     
     # OAuth Providers
@@ -127,35 +136,40 @@ class Settings(BaseSettings):
     RELOAD_ON_CHANGE: bool = False
     PROFILING_ENABLED: bool = False
     
-    @validator("ALLOWED_ORIGINS", pre=True)
+    @field_validator("ALLOWED_ORIGINS", mode="before")
+    @classmethod
     def parse_cors_origins(cls, v):
         """Parse CORS origins from comma-separated string."""
         if isinstance(v, str):
             return [origin.strip() for origin in v.split(",")]
         return v
     
-    @validator("DATABASE_URL", pre=True)
+    @field_validator("DATABASE_URL")
+    @classmethod
     def validate_database_url(cls, v):
         """Validate database URL."""
         if not str(v).startswith('postgresql'):
             raise ValueError("DATABASE_URL must be a PostgreSQL connection string")
         return v
     
-    @validator("REDIS_URL", pre=True)
+    @field_validator("REDIS_URL")
+    @classmethod
     def validate_redis_url(cls, v):
         """Validate Redis URL."""
         if not str(v).startswith('redis'):
             raise ValueError("REDIS_URL must be a Redis connection string")
         return v
     
-    @validator("SECRET_KEY", "JWT_SECRET_KEY")
+    @field_validator("SECRET_KEY", "JWT_SECRET_KEY")
+    @classmethod
     def validate_secret_keys(cls, v):
         """Validate secret keys are long enough."""
         if len(v) < 32:
             raise ValueError("Secret keys must be at least 32 characters long")
         return v
     
-    @validator("LOG_LEVEL")
+    @field_validator("LOG_LEVEL")
+    @classmethod
     def validate_log_level(cls, v):
         """Validate log level."""
         valid_levels = ["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -163,16 +177,13 @@ class Settings(BaseSettings):
             raise ValueError(f"LOG_LEVEL must be one of {valid_levels}")
         return v.upper()
     
-    @validator("BASE_URL")
+    @field_validator("BASE_URL")
+    @classmethod
     def validate_base_url(cls, v):
         """Validate base URL."""
         if not v.startswith(('http://', 'https://')):
             raise ValueError("BASE_URL must start with http:// or https://")
         return v.rstrip('/')
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
 
 
 @lru_cache()
@@ -219,8 +230,6 @@ class TestSettings(Settings):
 
 def get_environment_settings():
     """Get settings based on environment."""
-    import os
-    
     env = os.getenv("ENVIRONMENT", "development").lower()
     
     if env == "production":
