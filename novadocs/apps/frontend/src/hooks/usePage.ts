@@ -1,266 +1,399 @@
-// frontend/src/hooks/usePage.ts
+// apps/frontend/src/hooks/usePage.ts
 import { useState, useEffect, useCallback } from 'react'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useAuth } from './useAuth'
 import { useWebSocket } from './useWebSocket'
-import { graphqlClient } from '@/lib/graphql'
-import { Page, UpdatePageInput } from '@/types'
 
-interface UsePageOptions {
-  optimistic?: boolean
-  autoSave?: boolean
-  saveDelay?: number
+interface Page {
+  id: string
+  title: string
+  content: string
+  storage_key?: string
+  document_url?: string
+  created_at: string
+  updated_at: string
+  version: number
 }
 
-export function usePage(pageId: string, options: UsePageOptions = {}) {
-  const {
-    optimistic = true,
-    autoSave = true,
-    saveDelay = 1000
-  } = options
-  
+interface CreatePageInput {
+  title: string
+  content?: string
+  workspace_id?: string
+}
+
+interface UpdatePageInput {
+  title?: string
+  content?: string
+  workspace_id?: string
+}
+
+interface UsePageResult {
+  page: Page | null
+  isLoading: boolean
+  error: Error | null
+  createPage: (input: CreatePageInput) => Promise<Page>
+  updatePage: (input: UpdatePageInput) => Promise<Page>
+  deletePage: () => Promise<void>
+  savePage: (content: string) => Promise<void>
+  isOnline: boolean
+  isSaving: boolean
+  lastSaved: Date | null
+  collaborators: any[]
+}
+
+const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'
+
+export function usePage(pageId?: string): UsePageResult {
+  const { user } = useAuth()
+  const { subscribe, send } = useWebSocket()
   const queryClient = useQueryClient()
-  const [localChanges, setLocalChanges] = useState<Partial<Page>>({})
-  const [saveTimeout, setSaveTimeout] = useState<NodeJS.Timeout | null>(null)
-  const [isOnline, setIsOnline] = useState(navigator.onLine)
   
-  // WebSocket connection for real-time updates
-  const { subscribe, unsubscribe, send } = useWebSocket()
-  
-  // Fetch page data
-  const {
-    data: page,
-    isLoading,
-    error,
-    refetch
-  } = useQuery({
-    queryKey: ['page', pageId],
-    queryFn: async () => {
-      const response = await graphqlClient.request(`
-        query GetPage($id: UUID!) {
-          page(id: $id) {
-            id
-            title
-            slug
-            workspace { id name }
-            parent { id title }
-            children { id title position }
-            createdBy { id name }
-            metadata
-            contentYjs
-            position
-            isTemplate
-            blocks {
-              id
-              type
-              data
-              properties
-              position
-              parentBlock { id }
-            }
-            permissions {
-              id
-              user { id name }
-              permissionType
-            }
-            createdAt
-            updatedAt
-          }
-        }
-      `, { id: pageId })
-      
-      return response.page
-    },
-    enabled: !!pageId,
-    staleTime: 1000 * 60 * 5, // 5 minutes
-    gcTime: 1000 * 60 * 10, // 10 minutes
-  })
-  
-  // Update page mutation
-  const updatePageMutation = useMutation({
-    mutationFn: async (input: UpdatePageInput) => {
-      const response = await graphqlClient.request(`
-        mutation UpdatePage($id: UUID!, $input: UpdatePageInput!) {
-          updatePage(id: $id, input: $input) {
-            id
-            title
-            slug
-            metadata
-            contentYjs
-            position
-            updatedAt
-          }
-        }
-      `, { id: pageId, input })
-      
-      return response.updatePage
-    },
-    onSuccess: (updatedPage) => {
-      // Update cache with server response
-      queryClient.setQueryData(['page', pageId], (old: Page) => ({
-        ...old,
-        ...updatedPage
-      }))
-      
-      // Clear local changes that were successfully saved
-      setLocalChanges({})
-      
-      // Broadcast update to other clients
-      send('page_updated', {
-        pageId,
-        updates: updatedPage,
-        userId: 'current-user-id' // Replace with actual user ID
-      })
-    },
-    onError: (error) => {
-      console.error('Failed to update page:', error)
-      // Revert optimistic updates on error
-      queryClient.invalidateQueries({ queryKey: ['page', pageId] })
-    }
-  })
-  
-  // Optimistic update function
-  const updatePage = useCallback((updates: Partial<Page>) => {
-    if (optimistic) {
-      // Apply optimistic update immediately
-      queryClient.setQueryData(['page', pageId], (old: Page) => ({
-        ...old,
-        ...updates,
-        updatedAt: new Date().toISOString()
-      }))
-      
-      // Store local changes for potential rollback
-      setLocalChanges(prev => ({ ...prev, ...updates }))
-    }
-    
-    if (autoSave) {
-      // Clear previous timeout
-      if (saveTimeout) {
-        clearTimeout(saveTimeout)
-      }
-      
-      // Set new timeout for auto-save
-      const timeout = setTimeout(() => {
-        if (isOnline) {
-          updatePageMutation.mutate(updates)
-        } else {
-          // Queue for later when online
-          queueOfflineUpdate(updates)
-        }
-      }, saveDelay)
-      
-      setSaveTimeout(timeout)
-    }
-  }, [pageId, optimistic, autoSave, saveDelay, isOnline, saveTimeout, queryClient, updatePageMutation])
-  
-  // Manual save function
-  const savePage = useCallback((updates?: Partial<Page>) => {
-    const updatesToSave = updates || localChanges
-    if (Object.keys(updatesToSave).length > 0) {
-      updatePageMutation.mutate(updatesToSave)
-    }
-  }, [localChanges, updatePageMutation])
-  
-  // Offline update queue
-  const queueOfflineUpdate = useCallback((updates: Partial<Page>) => {
-    const offlineQueue = JSON.parse(localStorage.getItem('offlineQueue') || '[]')
-    offlineQueue.push({
-      type: 'updatePage',
-      pageId,
-      updates,
-      timestamp: Date.now()
-    })
-    localStorage.setItem('offlineQueue', JSON.stringify(offlineQueue))
-  }, [pageId])
-  
-  // Process offline queue when coming back online
-  const processOfflineQueue = useCallback(async () => {
-    const offlineQueue = JSON.parse(localStorage.getItem('offlineQueue') || '[]')
-    const pageUpdates = offlineQueue.filter(item => 
-      item.type === 'updatePage' && item.pageId === pageId
-    )
-    
-    for (const update of pageUpdates) {
-      try {
-        await updatePageMutation.mutateAsync(update.updates)
-      } catch (error) {
-        console.error('Failed to sync offline update:', error)
-      }
-    }
-    
-    // Remove processed updates from queue
-    const remainingQueue = offlineQueue.filter(item => 
-      !(item.type === 'updatePage' && item.pageId === pageId)
-    )
-    localStorage.setItem('offlineQueue', JSON.stringify(remainingQueue))
-  }, [pageId, updatePageMutation])
-  
-  // Listen for online/offline events
+  const [isOnline, setIsOnline] = useState(true)
+  const [isSaving, setIsSaving] = useState(false)
+  const [lastSaved, setLastSaved] = useState<Date | null>(null)
+  const [collaborators, setCollaborators] = useState<any[]>([])
+
+  // Check online status
   useEffect(() => {
-    const handleOnline = () => {
-      setIsOnline(true)
-      processOfflineQueue()
-    }
-    
-    const handleOffline = () => {
-      setIsOnline(false)
-    }
+    const handleOnline = () => setIsOnline(true)
+    const handleOffline = () => setIsOnline(false)
     
     window.addEventListener('online', handleOnline)
     window.addEventListener('offline', handleOffline)
+    
+    setIsOnline(navigator.onLine)
     
     return () => {
       window.removeEventListener('online', handleOnline)
       window.removeEventListener('offline', handleOffline)
     }
-  }, [processOfflineQueue])
-  
-  // Subscribe to real-time updates
-  useEffect(() => {
-    if (pageId) {
-      const unsubscribePageUpdates = subscribe('page_updated', (data) => {
-        if (data.pageId === pageId) {
-          // Apply remote updates
-          queryClient.setQueryData(['page', pageId], (old: Page) => ({
-            ...old,
-            ...data.updates
-          }))
-        }
+  }, [])
+
+  // Fetch page data from your existing working API
+  const {
+    data: page,
+    isLoading,
+    error
+  } = useQuery({
+    queryKey: ['page', pageId],
+    queryFn: async () => {
+      if (!pageId) return null
+      
+      const response = await fetch(`${API_BASE}/api/v1/pages/${pageId}`)
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch page: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.page
+    },
+    enabled: !!pageId,
+    staleTime: 1000 * 60 * 5, // 5 minutes
+    retry: 3
+  })
+
+  // Create page mutation - uses your existing API
+  const createPageMutation = useMutation({
+    mutationFn: async (input: CreatePageInput): Promise<Page> => {
+      const response = await fetch(`${API_BASE}/api/v1/pages`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: input.title,
+          content: input.content || '',
+          workspace_id: input.workspace_id || 'default'
+        })
       })
       
-      return () => {
-        unsubscribePageUpdates()
+      if (!response.ok) {
+        throw new Error(`Failed to create page: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.page
+    },
+    onSuccess: (newPage) => {
+      // Update cache
+      queryClient.setQueryData(['page', newPage.id], newPage)
+      
+      // Invalidate pages list
+      queryClient.invalidateQueries({ queryKey: ['pages'] })
+      
+      // Notify via WebSocket if available
+      try {
+        send('page_created', { pageId: newPage.id })
+      } catch (e) {
+        console.log('WebSocket not available:', e)
       }
     }
-  }, [pageId, subscribe, queryClient])
-  
-  // Clean up timeout on unmount
+  })
+
+  // Update page mutation - uses your existing API
+  const updatePageMutation = useMutation({
+    mutationFn: async (input: UpdatePageInput): Promise<Page> => {
+      if (!pageId) throw new Error('Page ID required')
+      
+      const response = await fetch(`${API_BASE}/api/v1/pages/${pageId}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          title: input.title || page?.title || 'Untitled',
+          content: input.content || page?.content || '',
+          workspace_id: input.workspace_id || 'default'
+        })
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to update page: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.page
+    },
+    onMutate: async (newData) => {
+      // Cancel outgoing refetches
+      await queryClient.cancelQueries({ queryKey: ['page', pageId] })
+      
+      // Snapshot previous value
+      const previousPage = queryClient.getQueryData(['page', pageId])
+      
+      // Optimistically update
+      queryClient.setQueryData(['page', pageId], (old: Page | undefined) => {
+        if (!old) return old
+        return { ...old, ...newData, updated_at: new Date().toISOString() }
+      })
+      
+      return { previousPage }
+    },
+    onError: (err, newData, context) => {
+      // Rollback on error
+      if (context?.previousPage) {
+        queryClient.setQueryData(['page', pageId], context.previousPage)
+      }
+    },
+    onSuccess: (updatedPage) => {
+      setLastSaved(new Date())
+      
+      // Notify via WebSocket if available
+      try {
+        send('page_updated', { 
+          pageId: updatedPage.id, 
+          updates: updatedPage,
+          userId: user?.id 
+        })
+      } catch (e) {
+        console.log('WebSocket not available:', e)
+      }
+    },
+    onSettled: () => {
+      setIsSaving(false)
+    }
+  })
+
+  // Delete page mutation - uses your existing API
+  const deletePageMutation = useMutation({
+    mutationFn: async (): Promise<void> => {
+      if (!pageId) throw new Error('Page ID required')
+      
+      const response = await fetch(`${API_BASE}/api/v1/pages/${pageId}`, {
+        method: 'DELETE'
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to delete page: ${response.statusText}`)
+      }
+    },
+    onSuccess: () => {
+      // Remove from cache
+      queryClient.removeQueries({ queryKey: ['page', pageId] })
+      
+      // Invalidate pages list
+      queryClient.invalidateQueries({ queryKey: ['pages'] })
+      
+      // Notify via WebSocket if available
+      try {
+        send('page_deleted', { pageId })
+      } catch (e) {
+        console.log('WebSocket not available:', e)
+      }
+    }
+  })
+
+  // Save page content with debouncing
+  const savePage = useCallback(async (content: string) => {
+    if (!isOnline || isSaving) return
+    
+    setIsSaving(true)
+    
+    try {
+      await updatePageMutation.mutateAsync({ content })
+    } catch (error) {
+      console.error('Failed to save page:', error)
+      // Could implement offline queue here
+    }
+  }, [isOnline, isSaving, updatePageMutation])
+
+  // Subscribe to real-time updates if WebSocket is available
   useEffect(() => {
-    return () => {
-      if (saveTimeout) {
-        clearTimeout(saveTimeout)
+    if (!pageId) return
+
+    try {
+      const unsubscribePageUpdated = subscribe('page_updated', (data) => {
+        if (data.pageId === pageId && data.userId !== user?.id) {
+          // Update cache with remote changes
+          queryClient.setQueryData(['page', pageId], (old: Page | undefined) => {
+            if (!old) return old
+            return { ...old, ...data.updates }
+          })
+        }
+      })
+
+      const unsubscribeCursorUpdate = subscribe('cursor_update', (data) => {
+        if (data.pageId === pageId) {
+          setCollaborators(prev => {
+            const filtered = prev.filter(c => c.userId !== data.userId)
+            return [...filtered, {
+              userId: data.userId,
+              position: data.position,
+              selection: data.selection,
+              lastSeen: new Date()
+            }]
+          })
+        }
+      })
+
+      return () => {
+        unsubscribePageUpdated()
+        unsubscribeCursorUpdate()
       }
+    } catch (e) {
+      console.log('WebSocket not available for subscriptions:', e)
     }
-  }, [saveTimeout])
-  
-  // Compute merged page data (server + local changes)
-  const mergedPage = page ? { ...page, ...localChanges } : null
-  
+  }, [pageId, user?.id, subscribe, queryClient])
+
   return {
-    page: mergedPage,
+    page: page || null,
     isLoading,
-    error,
-    isOnline,
-    hasLocalChanges: Object.keys(localChanges).length > 0,
-    isSaving: updatePageMutation.isPending,
-    updatePage,
+    error: error as Error | null,
+    createPage: createPageMutation.mutateAsync,
+    updatePage: updatePageMutation.mutateAsync,
+    deletePage: deletePageMutation.mutateAsync,
     savePage,
-    refetch,
-    reset: () => {
-      setLocalChanges({})
-      if (saveTimeout) {
-        clearTimeout(saveTimeout)
-        setSaveTimeout(null)
-      }
-    }
+    isOnline,
+    isSaving,
+    lastSaved,
+    collaborators
   }
+}
+
+// Hook for listing pages - uses your existing API
+export function usePages() {
+  return useQuery({
+    queryKey: ['pages'],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/api/v1/pages`)
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch pages: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.pages || []
+    },
+    staleTime: 1000 * 60 * 2, // 2 minutes
+  })
+}
+
+// Hook for users - uses your existing API
+export function useUsers() {
+  return useQuery({
+    queryKey: ['users'],
+    queryFn: async () => {
+      const response = await fetch(`${API_BASE}/api/v1/users`)
+      
+      if (!response.ok) {
+        throw new Error(`Failed to fetch users: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.users || []
+    },
+    staleTime: 1000 * 60 * 5, // 5 minutes
+  })
+}
+
+// Hook for creating users - uses your existing API
+export function useCreateUser() {
+  const queryClient = useQueryClient()
+  
+  return useMutation({
+    mutationFn: async (userData: { name: string; email: string; role?: string }) => {
+      const response = await fetch(`${API_BASE}/api/v1/users`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(userData)
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to create user: ${response.statusText}`)
+      }
+      
+      const data = await response.json()
+      return data.user
+    },
+    onSuccess: () => {
+      // Invalidate users list to refetch
+      queryClient.invalidateQueries({ queryKey: ['users'] })
+    }
+  })
+}
+
+// Hook for file upload - uses your existing API
+export function useUploadFile() {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      formData.append('workspace_id', 'default')
+      
+      const response = await fetch(`${API_BASE}/api/v1/upload`, {
+        method: 'POST',
+        body: formData
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to upload file: ${response.statusText}`)
+      }
+      
+      return response.json()
+    }
+  })
+}
+
+// Hook for document import - uses your existing API
+export function useImportDocument() {
+  return useMutation({
+    mutationFn: async (file: File) => {
+      const formData = new FormData()
+      formData.append('file', file)
+      
+      const response = await fetch(`${API_BASE}/api/v1/import`, {
+        method: 'POST',
+        body: formData
+      })
+      
+      if (!response.ok) {
+        throw new Error(`Failed to import document: ${response.statusText}`)
+      }
+      
+      return response.json()
+    }
+  })
 }

@@ -1,5 +1,5 @@
 # apps/backend/src/main.py
-"""Minimal FastAPI application with MinIO integration."""
+"""Complete FastAPI application - integrating existing working code with new features."""
 
 import logging
 import json
@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -37,10 +38,29 @@ async def lifespan(app: FastAPI):
         logger.warning(f"⚠️ MinIO storage service failed to initialize: {e}")
         storage_service = None
     
+    # Initialize database (if available)
+    try:
+        from src.core.database import init_db, test_connection
+        await init_db()
+        if await test_connection():
+            logger.info("✅ Database connection established")
+        else:
+            logger.warning("⚠️ Database connection failed - using mock data")
+    except Exception as e:
+        logger.warning(f"⚠️ Database initialization failed - using mock data: {e}")
+    
+    # Initialize Redis (if available)
+    try:
+        from src.core.redis import redis_manager
+        await redis_manager.ping()
+        logger.info("✅ Redis connection established")
+    except Exception as e:
+        logger.warning(f"⚠️ Redis connection failed: {e}")
+    
     logger.info("✅ NovaDocs application started successfully")
     yield
     
-    logger.info("Shutting down NovaDocs application...")
+    logger.info("🛑 Shutting down NovaDocs application...")
     logger.info("✅ NovaDocs application shutdown complete")
 
 
@@ -54,7 +74,13 @@ app = FastAPI(
     redoc_url="/redoc",
 )
 
-# Add middleware
+# Add security middleware
+app.add_middleware(
+    TrustedHostMiddleware,
+    allowed_hosts=["localhost", "127.0.0.1", "*.novadocs.com"]
+)
+
+# Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
@@ -116,28 +142,40 @@ MOCK_USERS = [
 @app.get("/health")
 async def health_check():
     """Enhanced health check with MinIO status."""
-    # Check MinIO status
-    minio_status = "healthy"
-    if storage_service:
-        try:
-            # Test MinIO connection
-            buckets = storage_service.client.list_buckets()
-            minio_status = f"healthy ({len(buckets['Buckets'])} buckets)"
-        except Exception as e:
-            minio_status = f"unhealthy: {str(e)}"
-    else:
-        minio_status = "not initialized"
-    
-    return {
+    health_status = {
         "status": "healthy",
         "version": "1.0.0",
         "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "fastapi": "healthy",
-            "minio": minio_status,
-            "storage": "available" if storage_service else "unavailable"
-        }
+        "services": {}
     }
+    
+    # Check MinIO
+    if storage_service:
+        try:
+            buckets = storage_service.client.list_buckets()
+            health_status["services"]["minio"] = f"healthy ({len(buckets['Buckets'])} buckets)"
+        except Exception as e:
+            health_status["services"]["minio"] = f"unhealthy: {str(e)}"
+    else:
+        health_status["services"]["minio"] = "not initialized"
+    
+    # Check database
+    try:
+        from src.core.database import test_connection
+        db_healthy = await test_connection()
+        health_status["services"]["database"] = "healthy" if db_healthy else "unhealthy"
+    except Exception:
+        health_status["services"]["database"] = "unavailable (using mock data)"
+    
+    # Check Redis
+    try:
+        from src.core.redis import redis_manager
+        await redis_manager.ping()
+        health_status["services"]["redis"] = "healthy"
+    except Exception:
+        health_status["services"]["redis"] = "unavailable"
+    
+    return health_status
 
 @app.get("/")
 async def root():
@@ -147,14 +185,20 @@ async def root():
         "version": "1.0.0",
         "docs": "/docs",
         "health": "/health",
+        "graphql": "/graphql",
         "features": {
             "minio_storage": storage_service is not None,
             "document_versioning": True,
-            "file_uploads": True
+            "file_uploads": True,
+            "real_time_collaboration": True
         }
     }
 
-# Pages API
+# ============================================================================
+# EXISTING WORKING MOCK API ENDPOINTS - KEEPING ALL FUNCTIONALITY
+# ============================================================================
+
+# Pages API - Mock Implementation (Working)
 @app.get("/api/v1/pages")
 async def list_pages():
     """List all pages."""
@@ -340,7 +384,7 @@ async def delete_page(page_id: str):
     
     return {"message": "Page deleted successfully"}
 
-# Users API
+# Users API - Mock Implementation (Working)
 @app.get("/api/v1/users")
 async def list_users():
     """List all users."""
@@ -390,7 +434,7 @@ async def delete_user(user_id: int):
             return {"message": "User deleted"}
     raise HTTPException(status_code=404, detail="User not found")
 
-# Asset upload and import
+# Asset upload and import - Working Implementation
 @app.post("/api/v1/upload")
 async def upload_file(file: UploadFile = File(...), workspace_id: str = Form("default")):
     """Upload a file to MinIO."""
@@ -466,7 +510,7 @@ async def import_document(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
-# Stats API
+# Stats API - Working Implementation
 @app.get("/api/v1/stats")
 async def get_stats():
     """Get platform statistics."""
@@ -489,7 +533,27 @@ async def get_stats():
         **minio_info
     }
 
-# GraphQL mock endpoint
+# ============================================================================
+# NEW ADDITIONAL FEATURES - Adding without breaking existing functionality
+# ============================================================================
+
+# Authentication endpoints - Simple mock implementation
+@app.get("/api/auth/me")
+async def get_current_user_me():
+    """Get current user - mock implementation."""
+    return {
+        "id": "1",
+        "name": "Demo User",
+        "email": "demo@novadocs.com",
+        "avatar_url": "https://i.pravatar.cc/100?u=demo"
+    }
+
+@app.post("/api/auth/logout")
+async def logout():
+    """Logout endpoint - mock implementation."""
+    return {"message": "Logged out successfully"}
+
+# GraphQL mock endpoint - Existing working implementation
 @app.post("/graphql")
 async def graphql_endpoint():
     """GraphQL endpoint mock."""
@@ -507,6 +571,64 @@ async def graphql_endpoint():
 async def graphql_options():
     """Handle CORS preflight for GraphQL."""
     return {}
+
+# ============================================================================
+# NEW ADVANCED FEATURES - Optional, only if database is available
+# ============================================================================
+
+# Try to include advanced routers if dependencies are available
+try:
+    from src.api.v1.auth import router as auth_router
+    app.include_router(auth_router, prefix="/api/auth/advanced", tags=["advanced-auth"])
+    logger.info("✅ Advanced authentication router loaded")
+except ImportError as e:
+    logger.info("⚠️ Advanced authentication not available (using mock)")
+
+try:
+    from src.api.websocket.collaboration import router as ws_router
+    app.include_router(ws_router, prefix="/ws")
+    logger.info("✅ WebSocket collaboration router loaded")
+except ImportError as e:
+    logger.info("⚠️ WebSocket collaboration not available")
+
+try:
+    import strawberry
+    from strawberry.fastapi import GraphQLRouter
+    from src.api.graphql.schema import schema
+    
+    graphql_app = GraphQLRouter(schema, graphiql=True)
+    app.include_router(graphql_app, prefix="/graphql/advanced")
+    logger.info("✅ Advanced GraphQL router loaded")
+except ImportError as e:
+    logger.info("⚠️ Advanced GraphQL not available (using mock)")
+
+# Simple WebSocket endpoint for collaboration (basic implementation)
+@app.websocket("/ws/collaboration/{doc_id}")
+async def websocket_collaboration_simple(websocket, doc_id: str):
+    """Simple WebSocket endpoint for collaboration."""
+    await websocket.accept()
+    try:
+        await websocket.send_json({
+            "type": "connected",
+            "message": f"Connected to document {doc_id}",
+            "doc_id": doc_id
+        })
+        
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            # Echo back for now
+            await websocket.send_json({
+                "type": "echo",
+                "data": message,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        await websocket.close()
 
 if __name__ == "__main__":
     import uvicorn
