@@ -107,4 +107,3 @@ export function EditorBubbleMenu({ editor, isOnline = true }: EditorBubbleMenuPr
     </BubbleMenu>
   )
 }
-

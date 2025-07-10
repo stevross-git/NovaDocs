@@ -14,7 +14,7 @@ import {
   Quote, 
   Table, 
   Image, 
-  Divider,
+  Minus, // Fixed: changed from Divider to Minus
   CheckSquare,
   Calendar,
   Grid,
@@ -152,7 +152,7 @@ const getSlashCommandItems = (): SlashCommandItem[] => [
     id: 'divider',
     title: 'Divider',
     description: 'Visually divide blocks',
-    icon: <Divider className="h-4 w-4" />,
+    icon: <Minus className="h-4 w-4" />, // Fixed: changed from Divider to Minus
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).setHorizontalRule().run()
     },
@@ -164,7 +164,7 @@ const getSlashCommandItems = (): SlashCommandItem[] => [
   {
     id: 'table',
     title: 'Table',
-    description: 'Create a table',
+    description: 'Create a simple table',
     icon: <Table className="h-4 w-4" />,
     command: ({ editor, range }) => {
       editor.chain().focus().deleteRange(range).insertTable({ rows: 3, cols: 3, withHeaderRow: true }).run()
@@ -173,121 +173,91 @@ const getSlashCommandItems = (): SlashCommandItem[] => [
     category: 'advanced'
   },
   {
-    id: 'database',
-    title: 'Database',
-    description: 'Create a database with multiple views',
-    icon: <Grid className="h-4 w-4" />,
-    command: ({ editor, range }) => {
-      editor.chain().focus().deleteRange(range).setDatabaseView({
-        databaseId: `db_${Date.now()}`,
-        viewType: 'table',
-        columns: [],
-        rows: []
-      }).run()
-    },
-    keywords: ['database', 'table', 'data', 'spreadsheet'],
-    category: 'advanced'
-  },
-  {
     id: 'image',
     title: 'Image',
     description: 'Upload or embed an image',
     icon: <Image className="h-4 w-4" />,
     command: ({ editor, range }) => {
-      const url = window.prompt('Enter image URL')
+      const url = window.prompt('Image URL')
       if (url) {
         editor.chain().focus().deleteRange(range).setImage({ src: url }).run()
       }
     },
-    keywords: ['image', 'photo', 'picture', 'img'],
+    keywords: ['image', 'photo', 'picture', 'media'],
     category: 'media'
-  },
+  }
 ]
 
 // Slash Command Menu Component
 const SlashCommandMenu = forwardRef<any, SlashCommandProps>((props, ref) => {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [query, setQuery] = useState('')
-  const commandListRef = useRef<HTMLDivElement>(null)
 
-  // Filter items based on query
   const filteredItems = props.items.filter(item => {
-    const searchTerm = query.toLowerCase()
+    const searchText = query.toLowerCase()
     return (
-      item.title.toLowerCase().includes(searchTerm) ||
-      item.description.toLowerCase().includes(searchTerm) ||
-      item.keywords?.some(keyword => keyword.toLowerCase().includes(searchTerm))
+      item.title.toLowerCase().includes(searchText) ||
+      item.description.toLowerCase().includes(searchText) ||
+      item.keywords?.some(keyword => keyword.includes(searchText))
     )
   })
 
-  // Group items by category
-  const groupedItems = filteredItems.reduce((acc, item) => {
-    const category = item.category || 'other'
-    if (!acc[category]) acc[category] = []
-    acc[category].push(item)
-    return acc
-  }, {} as Record<string, SlashCommandItem[]>)
-
-  const categoryOrder = ['basic', 'lists', 'blocks', 'advanced', 'media', 'other']
-  const categories = categoryOrder.filter(cat => groupedItems[cat]?.length > 0)
-
-  // Calculate total items for navigation
-  const totalItems = filteredItems.length
+  const selectItem = React.useCallback((index: number) => {
+    const item = filteredItems[index]
+    if (item) {
+      props.command(item)
+    }
+  }, [filteredItems, props])
 
   useImperativeHandle(ref, () => ({
     onKeyDown: ({ event }: { event: KeyboardEvent }) => {
       if (event.key === 'ArrowDown') {
-        setSelectedIndex((selectedIndex + 1) % totalItems)
+        setSelectedIndex((selectedIndex + 1) % filteredItems.length)
         return true
       }
+
       if (event.key === 'ArrowUp') {
-        setSelectedIndex((selectedIndex + totalItems - 1) % totalItems)
+        setSelectedIndex((selectedIndex + filteredItems.length - 1) % filteredItems.length)
         return true
       }
+
       if (event.key === 'Enter') {
-        if (filteredItems[selectedIndex]) {
-          props.command(filteredItems[selectedIndex])
-        }
+        selectItem(selectedIndex)
         return true
       }
+
       return false
     },
-    updateQuery: (newQuery: string) => {
-      setQuery(newQuery)
-      setSelectedIndex(0)
-    }
   }))
 
-  // Scroll selected item into view
   useEffect(() => {
-    if (commandListRef.current) {
-      const selectedElement = commandListRef.current.children[selectedIndex] as HTMLElement
-      if (selectedElement) {
-        selectedElement.scrollIntoView({ block: 'nearest' })
-      }
-    }
-  }, [selectedIndex])
+    setSelectedIndex(0)
+  }, [filteredItems])
 
-  const categoryTitles = {
-    basic: 'Basic blocks',
-    lists: 'Lists',
-    blocks: 'Content blocks',
-    advanced: 'Advanced',
-    media: 'Media',
-    other: 'Other'
-  }
+  // Group items by category
+  const groupedItems = filteredItems.reduce((groups, item) => {
+    const category = item.category || 'other'
+    if (!groups[category]) {
+      groups[category] = []
+    }
+    groups[category].push(item)
+    return groups
+  }, {} as Record<string, SlashCommandItem[]>)
+
+  const categoryOrder = ['basic', 'lists', 'blocks', 'advanced', 'media', 'other']
+  const orderedCategories = categoryOrder.filter(cat => groupedItems[cat])
 
   return (
-    <div className="slash-command-menu bg-white border border-gray-200 rounded-lg shadow-lg p-2 max-h-80 overflow-y-auto min-w-72">
-      <div className="text-xs text-gray-500 mb-2 px-2">
-        {query ? `Results for "${query}"` : 'Choose a block type'}
+    <div className="z-50 w-72 bg-white rounded-lg border border-gray-200 shadow-lg max-h-80 overflow-y-auto">
+      <div className="p-2 border-b border-gray-100">
+        <div className="text-xs text-gray-500 font-medium">Type to search...</div>
       </div>
-      
-      <div ref={commandListRef} className="space-y-1">
-        {categories.map(category => (
-          <div key={category}>
-            <div className="text-xs font-medium text-gray-400 uppercase tracking-wider px-2 py-1">
-              {categoryTitles[category]}
+
+      <div className="p-1">
+        {orderedCategories.map((category) => (
+          <div key={category} className="mb-2 last:mb-0">
+            <div className="px-2 py-1 text-xs font-medium text-gray-400 uppercase tracking-wide">
+              {category}
             </div>
             {groupedItems[category].map((item, index) => {
               const globalIndex = filteredItems.indexOf(item)
@@ -295,7 +265,7 @@ const SlashCommandMenu = forwardRef<any, SlashCommandProps>((props, ref) => {
                 <div
                   key={item.id}
                   className={cn(
-                    'flex items-center gap-3 px-2 py-2 rounded cursor-pointer transition-colors',
+                    'flex items-center gap-3 p-2 rounded cursor-pointer transition-colors',
                     globalIndex === selectedIndex
                       ? 'bg-blue-50 border-blue-200'
                       : 'hover:bg-gray-50'
@@ -332,8 +302,8 @@ const SlashCommandMenu = forwardRef<any, SlashCommandProps>((props, ref) => {
 
 SlashCommandMenu.displayName = 'SlashCommandMenu'
 
-// Slash Command Extension
-export const SlashCommand = Extension.create({
+// Slash Command Extension - ONLY export as default
+const SlashCommand = Extension.create({
   name: 'slashCommand',
 
   addOptions() {
@@ -419,82 +389,41 @@ function showSuggestions(view: any) {
       },
       editor: view.state.editor,
       range,
+      query
     },
-    editor: view.state.editor,
+    element: document.body,
   })
 
-  popup = tippy('body', {
-    getReferenceClientRect: () => {
-      const { selection } = view.state
-      const { $from } = selection
-      const node = view.nodeDOM($from.pos)
-      
-      if (node) {
-        const rect = node.getBoundingClientRect()
-        return {
-          width: 0,
-          height: 0,
-          top: rect.top,
-          right: rect.left,
-          bottom: rect.top,
-          left: rect.left,
-        }
-      }
-      
-      return {
-        width: 0,
-        height: 0,
-        top: 0,
-        right: 0,
-        bottom: 0,
-        left: 0,
-      }
-    },
-    appendTo: () => document.body,
-    content: component.element,
-    showOnCreate: true,
-    interactive: true,
-    trigger: 'manual',
-    placement: 'bottom-start',
-    hideOnClick: false,
-    theme: 'light-border',
-  })
-
-  // Update query on input
-  const updateQuery = (newQuery: string) => {
-    component?.updateProps({ query: newQuery })
-  }
-
-  // Listen for text changes
-  const handleInput = () => {
-    const { state } = view
-    const { selection } = state
-    const { $from } = selection
-    
-    const newQuery = state.doc.textBetween(slashPos + 1, $from.pos)
-    updateQuery(newQuery)
-  }
-
-  // Add event listener for input
-  view.dom.addEventListener('input', handleInput)
-
-  // Clean up on hide
-  const originalHide = popup.hide
-  popup.hide = () => {
-    view.dom.removeEventListener('input', handleInput)
-    originalHide()
+  if (!popup) {
+    popup = tippy(view.dom, {
+      getReferenceClientRect: () => {
+        const { ranges } = view.state.selection
+        const from = Math.min(...ranges.map(range => range.$from.pos))
+        const to = Math.max(...ranges.map(range => range.$to.pos))
+        
+        return view.coordsAtPos(from)
+      },
+      appendTo: () => document.body,
+      content: component.element,
+      showOnCreate: true,
+      interactive: true,
+      trigger: 'manual',
+      placement: 'bottom-start',
+    })
   }
 }
 
 function hideSuggestions() {
   if (popup) {
-    popup.hide()
+    popup.destroy()
     popup = null
   }
+
   if (component) {
     component.destroy()
     component = null
   }
 }
 
+// Export only as default to avoid conflicts
 export default SlashCommand

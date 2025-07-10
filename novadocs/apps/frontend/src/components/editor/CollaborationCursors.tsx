@@ -6,32 +6,43 @@ interface CollaborationUser {
   id: string
   name: string
   color: string
-  cursor_position?: number
-  selection?: any
+  cursor?: {
+    x: number
+    y: number
+  }
 }
 
 interface CollaborationCursorsProps {
-  collaborators: CollaborationUser[]
+  users?: CollaborationUser[]
+  className?: string
 }
 
-export function CollaborationCursors({ collaborators }: CollaborationCursorsProps) {
-  if (collaborators.length === 0) return null
-
+export function CollaborationCursors({ users = [], className }: CollaborationCursorsProps) {
   return (
-    <div className="absolute top-2 left-2 z-10 flex items-center gap-1">
-      {collaborators.map((collaborator) => (
-        <div
-          key={collaborator.id}
-          className="flex items-center gap-1 bg-white border border-gray-200 rounded-full pl-1 pr-2 py-1 text-xs shadow-sm"
-        >
+    <div className={cn("absolute inset-0 pointer-events-none", className)}>
+      {users.map((user) => (
+        user.cursor && (
           <div
-            className="w-3 h-3 rounded-full border border-white"
-            style={{ backgroundColor: collaborator.color }}
-          />
-          <span className="text-gray-700 font-medium max-w-20 truncate">
-            {collaborator.name}
-          </span>
-        </div>
+            key={user.id}
+            className="absolute transition-all duration-100 ease-out"
+            style={{
+              left: user.cursor.x,
+              top: user.cursor.y,
+              transform: 'translate(-50%, -50%)',
+            }}
+          >
+            <div
+              className="w-3 h-3 rounded-full border-2 border-white shadow-lg"
+              style={{ backgroundColor: user.color }}
+            />
+            <div
+              className="mt-1 px-2 py-1 text-xs text-white rounded shadow-lg whitespace-nowrap"
+              style={{ backgroundColor: user.color }}
+            >
+              {user.name}
+            </div>
+          </div>
+        )
       ))}
     </div>
   )

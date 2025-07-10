@@ -1,11 +1,11 @@
-// apps/frontend/src/hooks/useAuth.ts
+// src/hooks/useAuth.ts - Add this if the hook doesn't exist or has issues
 import { useState, useEffect } from 'react'
 
 interface User {
   id: string
   name: string
   email: string
-  token: string
+  token?: string
   avatar_url?: string
 }
 
@@ -14,34 +14,26 @@ export function useAuth() {
   const [loading, setLoading] = useState(true)
 
   useEffect(() => {
-    // Check for existing session
-    const checkAuth = async () => {
-      try {
-        const response = await fetch('/api/auth/me', {
-          credentials: 'include'
-        })
-        
-        if (response.ok) {
-          const userData = await response.json()
-          setUser(userData)
-        }
-      } catch (error) {
-        console.error('Auth check failed:', error)
-      } finally {
-        setLoading(false)
-      }
+    // Mock user for development - replace with real auth logic
+    const mockUser: User = {
+      id: 'mock-user-123',
+      name: 'Development User',
+      email: 'dev@novadocs.com',
+      token: 'mock-token-123'
     }
-
-    checkAuth()
+    
+    // Simulate loading delay
+    setTimeout(() => {
+      setUser(mockUser)
+      setLoading(false)
+    }, 1000)
   }, [])
 
   const login = async (provider: string) => {
     try {
-      const response = await fetch(`/api/auth/${provider}`)
-      const data = await response.json()
-      
-      // Redirect to OAuth provider
-      window.location.href = data.auth_url
+      // Mock login - replace with real implementation
+      console.log(`Would login with ${provider}`)
+      window.location.href = `/api/auth/${provider}`
     } catch (error) {
       console.error('Login failed:', error)
     }
@@ -49,11 +41,9 @@ export function useAuth() {
 
   const logout = async () => {
     try {
-      await fetch('/api/auth/logout', {
-        method: 'POST',
-        credentials: 'include'
-      })
+      // Mock logout - replace with real implementation
       setUser(null)
+      console.log('User logged out')
     } catch (error) {
       console.error('Logout failed:', error)
     }
