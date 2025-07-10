@@ -16,6 +16,9 @@ from pydantic import BaseModel
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Available user roles
+ROLES = ["super_admin", "admin", "editor", "viewer"]
+
 # Import MinIO storage after app creation to avoid circular imports
 storage_service = None
 
@@ -80,14 +83,33 @@ class UserResponse(BaseModel):
     id: int
     name: str
     email: str
+    role: str = "viewer"
     avatar_url: str = "https://i.pravatar.cc/100?u=default"
 
 # Mock data storage
 MOCK_PAGES = {}
 MOCK_USERS = [
-    {"id": 1, "name": "Alice Doe", "email": "alice@example.com", "avatar_url": "https://i.pravatar.cc/100?u=alice"},
-    {"id": 2, "name": "Bob Smith", "email": "bob@example.com", "avatar_url": "https://i.pravatar.cc/100?u=bob"},
-    {"id": 3, "name": "Charlie Brown", "email": "charlie@example.com", "avatar_url": "https://i.pravatar.cc/100?u=charlie"}
+    {
+        "id": 1,
+        "name": "Alice Doe",
+        "email": "alice@example.com",
+        "role": "super_admin",
+        "avatar_url": "https://i.pravatar.cc/100?u=alice",
+    },
+    {
+        "id": 2,
+        "name": "Bob Smith",
+        "email": "bob@example.com",
+        "role": "admin",
+        "avatar_url": "https://i.pravatar.cc/100?u=bob",
+    },
+    {
+        "id": 3,
+        "name": "Charlie Brown",
+        "email": "charlie@example.com",
+        "role": "editor",
+        "avatar_url": "https://i.pravatar.cc/100?u=charlie",
+    },
 ]
 
 # Health check endpoint
@@ -332,10 +354,41 @@ async def create_user(user_data: dict):
         "id": user_id,
         "name": user_data.get("name", "Unknown"),
         "email": user_data.get("email", f"user{user_id}@example.com"),
+        "role": user_data.get("role", "viewer"),
         "avatar_url": f"https://i.pravatar.cc/100?u={user_data.get('email', 'default')}"
     }
     MOCK_USERS.append(user)
     return {"user": UserResponse(**user), "message": "User created successfully"}
+
+@app.get("/api/v1/users/{user_id}")
+async def get_user(user_id: int):
+    """Retrieve a user by ID."""
+    for user in MOCK_USERS:
+        if user["id"] == user_id:
+            return {"user": UserResponse(**user)}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.put("/api/v1/users/{user_id}")
+async def update_user(user_id: int, user_data: dict):
+    """Update an existing user."""
+    for user in MOCK_USERS:
+        if user["id"] == user_id:
+            user["name"] = user_data.get("name", user["name"])
+            user["email"] = user_data.get("email", user["email"])
+            if "role" in user_data:
+                user["role"] = user_data["role"]
+            return {"user": UserResponse(**user), "message": "User updated"}
+    raise HTTPException(status_code=404, detail="User not found")
+
+@app.delete("/api/v1/users/{user_id}")
+async def delete_user(user_id: int):
+    """Delete a user."""
+    global MOCK_USERS
+    for user in MOCK_USERS:
+        if user["id"] == user_id:
+            MOCK_USERS = [u for u in MOCK_USERS if u["id"] != user_id]
+            return {"message": "User deleted"}
+    raise HTTPException(status_code=404, detail="User not found")
 
 # Asset upload and import
 @app.post("/api/v1/upload")

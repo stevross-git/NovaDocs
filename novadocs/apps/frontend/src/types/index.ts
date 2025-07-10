@@ -3,6 +3,7 @@ export interface User {
   id: string
   email: string
   name: string
+  role?: 'super_admin' | 'admin' | 'editor' | 'viewer'
   avatarUrl?: string
   preferences: Record<string, any>
   createdAt: string
