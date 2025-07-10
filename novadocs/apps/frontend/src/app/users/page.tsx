@@ -4,19 +4,24 @@ import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import Image from 'next/image'
 import { useForm } from 'react-hook-form'
+import { useRouter } from 'next/navigation'
 
 interface User {
   id: string | number
   name: string
   email: string
+  role: 'super_admin' | 'admin' | 'editor' | 'viewer'
   avatar_url?: string
 }
 
 export default function UsersPage() {
   const [users, setUsers] = useState<User[]>([])
   const [loading, setLoading] = useState(true)
-  const { register, handleSubmit, reset } = useForm<{ name: string; email: string }>()
+  const { register, handleSubmit, reset } = useForm<{ name: string; email: string; role: User['role'] }>({
+    defaultValues: { role: 'viewer' }
+  })
   const [error, setError] = useState<string | null>(null)
+  const router = useRouter()
 
   useEffect(() => {
     fetchUsers()
@@ -38,7 +43,23 @@ export default function UsersPage() {
     }
   }
 
-  const onSubmit = async (values: { name: string; email: string }) => {
+  const deleteUser = async (userId: string | number) => {
+    try {
+      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/users/${userId}`, {
+        method: 'DELETE'
+      })
+
+      if (res.ok) {
+        setUsers((prev) => prev.filter((u) => u.id !== userId))
+      } else {
+        setError(`Failed to delete user: ${res.status}`)
+      }
+    } catch (err: any) {
+      setError(err.message)
+    }
+  }
+
+  const onSubmit = async (values: { name: string; email: string; role: User['role'] }) => {
     try {
       const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL}/api/v1/users`, {
         method: 'POST',
@@ -49,7 +70,7 @@ export default function UsersPage() {
       if (res.ok) {
         const data = await res.json()
         setUsers((prev) => [...prev, data.user])
-        reset()
+        reset({ name: '', email: '', role: 'viewer' })
       } else {
         setError(`Failed to create user: ${res.status}`)
       }
@@ -101,6 +122,18 @@ export default function UsersPage() {
                 placeholder="user@example.com"
               />
             </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Role</label>
+              <select
+                {...register('role', { required: true })}
+                className="w-full border rounded-md px-3 py-2"
+              >
+                <option value="super_admin">Super Admin</option>
+                <option value="admin">Admin</option>
+                <option value="editor">Editor</option>
+                <option value="viewer">Viewer</option>
+              </select>
+            </div>
             <button
               type="submit"
               className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-md"
@@ -122,9 +155,24 @@ export default function UsersPage() {
                   className="rounded-full"
                 />
               )}
-              <div>
+              <div className="flex-1">
                 <p className="text-lg font-semibold text-gray-900">{user.name}</p>
                 <p className="text-sm text-gray-600">{user.email}</p>
+                <p className="text-xs text-gray-500">{user.role}</p>
+              </div>
+              <div className="space-x-2">
+                <button
+                  onClick={() => router.push(`/users/${user.id}`)}
+                  className="text-blue-600 hover:text-blue-800 text-sm"
+                >
+                  Edit
+                </button>
+                <button
+                  onClick={() => deleteUser(user.id)}
+                  className="text-red-600 hover:text-red-800 text-sm"
+                >
+                  Delete
+                </button>
               </div>
             </div>
           ))}

@@ -5,6 +5,7 @@ interface User {
   id: string
   name: string
   email: string
+  role?: 'super_admin' | 'admin' | 'editor' | 'viewer'
   token?: string
   avatar_url?: string
 }
@@ -19,6 +20,7 @@ export function useAuth() {
       id: 'mock-user-123',
       name: 'Development User',
       email: 'dev@novadocs.com',
+      role: 'editor',
       token: 'mock-token-123'
     }
     
