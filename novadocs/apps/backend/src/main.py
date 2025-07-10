@@ -1,53 +1,50 @@
-"""FastAPI application with full database integration."""
+# apps/backend/src/main.py
+"""Minimal FastAPI application with MinIO integration."""
 
 import logging
+import json
+import uuid
+from datetime import datetime
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Request
+
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-import json
-
-from src.core.config import settings
-from src.core.redis import init_redis, cleanup_redis, redis_manager
-from src.core.database import init_db, engine
-from src.api.v1.pages import router as pages_router
+from pydantic import BaseModel
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Import MinIO storage after app creation to avoid circular imports
+storage_service = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan events."""
+    global storage_service
     logger.info("🚀 Starting NovaDocs application...")
     
-    # Initialize Redis (non-blocking)
-    await init_redis()
-    
-    # Initialize Database
-    logger.info("📊 Initializing database...")
+    # Initialize MinIO storage
     try:
-        await init_db(engine)
-        logger.info("✅ Database initialized successfully")
+        from src.core.services.storage import MinIOStorageService
+        storage_service = MinIOStorageService()
+        logger.info("✅ MinIO storage service initialized")
     except Exception as e:
-        logger.error(f"❌ Database initialization failed: {e}")
-        # Don't fail the startup, continue with warning
-        logger.warning("⚠️  Continuing without database - some features may not work")
+        logger.warning(f"⚠️ MinIO storage service failed to initialize: {e}")
+        storage_service = None
     
     logger.info("✅ NovaDocs application started successfully")
     yield
     
     logger.info("Shutting down NovaDocs application...")
-    await cleanup_redis()
-    await engine.dispose()
     logger.info("✅ NovaDocs application shutdown complete")
 
 
 # Create FastAPI app
 app = FastAPI(
     title="NovaDocs API",
-    description="Modern collaborative document platform",
+    description="Modern collaborative document platform with MinIO storage",
     version="1.0.0",
     lifespan=lifespan,
     docs_url="/docs",
@@ -57,241 +54,407 @@ app = FastAPI(
 # Add middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.ALLOWED_ORIGINS,
+    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(pages_router)
+# Pydantic models
+class CreatePageRequest(BaseModel):
+    title: str
+    content: str = ""
+    workspace_id: str = "default"
 
+class PageResponse(BaseModel):
+    id: str
+    title: str
+    content: str
+    storage_key: str = None
+    document_url: str = None
+    created_at: str
+    updated_at: str
+    version: int = 1
+
+class UserResponse(BaseModel):
+    id: int
+    name: str
+    email: str
+    avatar_url: str = "https://i.pravatar.cc/100?u=default"
+
+# Mock data storage
+MOCK_PAGES = {}
+MOCK_USERS = [
+    {"id": 1, "name": "Alice Doe", "email": "alice@example.com", "avatar_url": "https://i.pravatar.cc/100?u=alice"},
+    {"id": 2, "name": "Bob Smith", "email": "bob@example.com", "avatar_url": "https://i.pravatar.cc/100?u=bob"},
+    {"id": 3, "name": "Charlie Brown", "email": "charlie@example.com", "avatar_url": "https://i.pravatar.cc/100?u=charlie"}
+]
 
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
-    # Test Redis
-    redis_status = "healthy"
-    try:
-        await redis_manager.set_cache("health_check", "ok", 60)
-        test_value = await redis_manager.get_cache("health_check")
-    except Exception as e:
-        redis_status = f"unhealthy: {str(e)}"
-        logger.error(f"Redis health check failed: {e}")
-    
-    # Test Database
-    database_status = "healthy"
-    try:
-        from src.core.database import get_db
-        from sqlalchemy import text
-        async with get_db() as db:
-            await db.execute(text("SELECT 1"))
-        database_status = "healthy"
-    except Exception as e:
-        database_status = f"unhealthy: {str(e)}"
-        logger.error(f"Database health check failed: {e}")
+    """Enhanced health check with MinIO status."""
+    # Check MinIO status
+    minio_status = "healthy"
+    if storage_service:
+        try:
+            # Test MinIO connection
+            buckets = storage_service.client.list_buckets()
+            minio_status = f"healthy ({len(buckets['Buckets'])} buckets)"
+        except Exception as e:
+            minio_status = f"unhealthy: {str(e)}"
+    else:
+        minio_status = "not initialized"
     
     return {
         "status": "healthy",
         "version": "1.0.0",
-        "environment": settings.ENVIRONMENT,
-        "timestamp": "2025-01-01T00:00:00Z",
+        "timestamp": datetime.utcnow().isoformat(),
         "services": {
-            "database": database_status,
-            "redis": redis_status,
-            "collaboration": "ready",
+            "fastapi": "healthy",
+            "minio": minio_status,
+            "storage": "available" if storage_service else "unavailable"
         }
     }
-
 
 @app.get("/")
 async def root():
     """Root endpoint."""
     return {
-        "message": "NovaDocs API",
+        "message": "NovaDocs API with MinIO Storage",
         "version": "1.0.0",
         "docs": "/docs",
-        "graphql": "/graphql",
-        "health": "/health"
+        "health": "/health",
+        "features": {
+            "minio_storage": storage_service is not None,
+            "document_versioning": True,
+            "file_uploads": True
+        }
     }
 
-
-# Legacy compatibility endpoints for the existing frontend
-MOCK_PAGES = {}
-
-
+# Pages API
 @app.get("/api/v1/pages")
-async def legacy_list_pages():
-    """Legacy endpoint for backward compatibility."""
-    return {"pages": list(MOCK_PAGES.values())}
-
-
-@app.post("/api/v1/pages")
-async def legacy_create_page(request: Request):
-    """Legacy endpoint for backward compatibility."""
-    try:
-        data = await request.json()
-        page_id = data.get("id", f"page-{len(MOCK_PAGES) + 1}")
+async def list_pages():
+    """List all pages."""
+    pages = []
+    for page_data in MOCK_PAGES.values():
+        # Try to get content from MinIO if storage_service is available
+        content = page_data.get("content", "")
+        document_url = None
         
-        page_data = {
-            "id": page_id,
-            "title": data.get("title", "Untitled"),
-            "content": data.get("content", ""),
-            "created_at": "2024-01-01T00:00:00Z",
-            "updated_at": "2024-01-01T00:00:00Z",
-            "collaboration_enabled": True,
-            "version": MOCK_PAGES.get(page_id, {}).get("version", 0) + 1
-        }
+        if storage_service and page_data.get("storage_key"):
+            try:
+                document = await storage_service.retrieve_document(page_data["storage_key"])
+                content = document.get("content", content)
+                document_url = await storage_service.get_asset_url(page_data["storage_key"])
+            except Exception as e:
+                logger.warning(f"Could not retrieve document from MinIO: {e}")
         
-        # Update mock data
-        MOCK_PAGES[page_id] = page_data
-        
-        # Invalidate cache
-        await redis_manager.delete_cache(f"page:{page_id}")
-        await redis_manager.delete_cache("all_pages")
-        
-        return {
-            **page_data,
-            "message": "Page saved successfully"
-        }
-        
-    except Exception as e:
-        logger.error(f"Error creating/updating page: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={"error": f"Failed to save page: {str(e)}"}
-        )
-
+        pages.append(PageResponse(
+            id=page_data["id"],
+            title=page_data["title"],
+            content=content,
+            storage_key=page_data.get("storage_key"),
+            document_url=document_url,
+            created_at=page_data["created_at"],
+            updated_at=page_data["updated_at"],
+            version=page_data.get("version", 1)
+        ))
+    
+    return {"pages": pages}
 
 @app.get("/api/v1/pages/{page_id}")
-async def legacy_get_page(page_id: str):
-    """Legacy endpoint for backward compatibility."""
-    if page_id in MOCK_PAGES:
-        return {"page": MOCK_PAGES[page_id]}
-    else:
-        return JSONResponse(
-            status_code=404,
-            content={"error": "Page not found"}
+async def get_page(page_id: str):
+    """Get a specific page."""
+    if page_id not in MOCK_PAGES:
+        raise HTTPException(status_code=404, detail="Page not found")
+    
+    page_data = MOCK_PAGES[page_id]
+    content = page_data.get("content", "")
+    document_url = None
+    
+    # Try to get content from MinIO
+    if storage_service and page_data.get("storage_key"):
+        try:
+            document = await storage_service.retrieve_document(page_data["storage_key"])
+            content = document.get("content", content)
+            document_url = await storage_service.get_asset_url(page_data["storage_key"])
+        except Exception as e:
+            logger.warning(f"Could not retrieve document from MinIO: {e}")
+    
+    return {
+        "page": PageResponse(
+            id=page_data["id"],
+            title=page_data["title"],
+            content=content,
+            storage_key=page_data.get("storage_key"),
+            document_url=document_url,
+            created_at=page_data["created_at"],
+            updated_at=page_data["updated_at"],
+            version=page_data.get("version", 1)
         )
+    }
 
+@app.post("/api/v1/pages")
+async def create_page(page_data: CreatePageRequest):
+    """Create a new page with MinIO storage."""
+    page_id = str(uuid.uuid4())
+    current_time = datetime.utcnow().isoformat()
+    
+    # Create page metadata
+    page_meta = {
+        "id": page_id,
+        "title": page_data.title,
+        "content": page_data.content,  # Fallback storage
+        "workspace_id": page_data.workspace_id,
+        "created_at": current_time,
+        "updated_at": current_time,
+        "version": 1,
+        "storage_key": None
+    }
+    
+    # Try to store content in MinIO
+    if storage_service and page_data.content:
+        try:
+            storage_key = await storage_service.store_document(
+                page_id=uuid.UUID(page_id),
+                content=page_data.content,
+                title=page_data.title,
+                version=1,
+                metadata={"workspace_id": page_data.workspace_id}
+            )
+            page_meta["storage_key"] = storage_key
+            logger.info(f"✅ Stored page in MinIO: {page_data.title}")
+        except Exception as e:
+            logger.warning(f"⚠️ MinIO storage failed, using fallback: {e}")
+    
+    # Store in mock data
+    MOCK_PAGES[page_id] = page_meta
+    
+    return {
+        "page": PageResponse(
+            id=page_id,
+            title=page_data.title,
+            content=page_data.content,
+            storage_key=page_meta.get("storage_key"),
+            created_at=current_time,
+            updated_at=current_time,
+            version=1
+        ),
+        "message": "Page created successfully",
+        "storage": "minio" if page_meta.get("storage_key") else "fallback"
+    }
 
-# Enhanced WebSocket for collaboration
-@app.websocket("/ws/collaboration/{doc_id}")
-async def websocket_collaboration(websocket, doc_id: str):
-    """WebSocket for real-time collaboration."""
-    await websocket.accept()
+@app.put("/api/v1/pages/{page_id}")
+async def update_page(page_id: str, page_data: CreatePageRequest):
+    """Update an existing page."""
+    if page_id not in MOCK_PAGES:
+        raise HTTPException(status_code=404, detail="Page not found")
+    
+    current_time = datetime.utcnow().isoformat()
+    page_meta = MOCK_PAGES[page_id]
+    
+    # Update metadata
+    page_meta["title"] = page_data.title
+    page_meta["content"] = page_data.content
+    page_meta["updated_at"] = current_time
+    page_meta["version"] += 1
+    
+    # Try to store updated content in MinIO
+    if storage_service and page_data.content:
+        try:
+            # Create backup of current version
+            if page_meta.get("storage_key"):
+                await storage_service.backup_document(
+                    page_id=uuid.UUID(page_id),
+                    content=page_data.content,
+                    title=page_data.title
+                )
+            
+            # Store new version
+            storage_key = await storage_service.store_document(
+                page_id=uuid.UUID(page_id),
+                content=page_data.content,
+                title=page_data.title,
+                version=page_meta["version"],
+                metadata={"workspace_id": page_meta.get("workspace_id", "default")}
+            )
+            page_meta["storage_key"] = storage_key
+            logger.info(f"✅ Updated page in MinIO: {page_data.title}")
+        except Exception as e:
+            logger.warning(f"⚠️ MinIO update failed, using fallback: {e}")
+    
+    return {
+        "page": PageResponse(
+            id=page_id,
+            title=page_data.title,
+            content=page_data.content,
+            storage_key=page_meta.get("storage_key"),
+            created_at=page_meta["created_at"],
+            updated_at=current_time,
+            version=page_meta["version"]
+        ),
+        "message": "Page updated successfully"
+    }
+
+@app.delete("/api/v1/pages/{page_id}")
+async def delete_page(page_id: str):
+    """Delete a page."""
+    if page_id not in MOCK_PAGES:
+        raise HTTPException(status_code=404, detail="Page not found")
+    
+    page_meta = MOCK_PAGES[page_id]
+    
+    # Delete from MinIO if it exists
+    if storage_service and page_meta.get("storage_key"):
+        try:
+            await storage_service.delete_document(page_meta["storage_key"])
+            logger.info(f"✅ Deleted page from MinIO: {page_meta['title']}")
+        except Exception as e:
+            logger.warning(f"⚠️ MinIO deletion failed: {e}")
+    
+    # Delete from mock data
+    del MOCK_PAGES[page_id]
+    
+    return {"message": "Page deleted successfully"}
+
+# Users API
+@app.get("/api/v1/users")
+async def list_users():
+    """List all users."""
+    return {"users": [UserResponse(**user) for user in MOCK_USERS]}
+
+@app.post("/api/v1/users")
+async def create_user(user_data: dict):
+    """Create a new user."""
+    user_id = len(MOCK_USERS) + 1
+    user = {
+        "id": user_id,
+        "name": user_data.get("name", "Unknown"),
+        "email": user_data.get("email", f"user{user_id}@example.com"),
+        "avatar_url": f"https://i.pravatar.cc/100?u={user_data.get('email', 'default')}"
+    }
+    MOCK_USERS.append(user)
+    return {"user": UserResponse(**user), "message": "User created successfully"}
+
+# Asset upload and import
+@app.post("/api/v1/upload")
+async def upload_file(file: UploadFile = File(...), workspace_id: str = Form("default")):
+    """Upload a file to MinIO."""
+    if not storage_service:
+        raise HTTPException(status_code=503, detail="Storage service not available")
     
     try:
-        # Send connection confirmation
-        await websocket.send_text(json.dumps({
-            "type": "connected",
-            "doc_id": doc_id,
-            "message": "Connected to collaboration server",
-            "server_time": "2024-01-01T00:00:00Z",
-            "features": {
-                "yjs_support": True,
-                "cursor_tracking": True,
-                "presence_awareness": True
-            }
-        }))
+        asset_info = await storage_service.store_asset(
+            file=file,
+            workspace_id=uuid.UUID(workspace_id) if workspace_id != "default" else uuid.uuid4(),
+            uploaded_by_id=uuid.uuid4(),  # Mock user ID
+            folder="uploads"
+        )
         
-        # Message handling loop
-        while True:
-            data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            message_type = message.get("type")
-            
-            if message_type == "yjs_update":
-                # Handle Yjs document updates
-                await redis_manager.set_cache(
-                    f"yjs_update:{doc_id}:{message.get('version', 0)}", 
-                    message, 
-                    3600
-                )
-                
-                await websocket.send_text(json.dumps({
-                    "type": "yjs_update_ack",
-                    "doc_id": doc_id,
-                    "version": message.get("version"),
-                    "timestamp": "2024-01-01T00:00:00Z"
-                }))
-            
-            elif message_type == "cursor_update":
-                # Handle cursor position updates
-                user_id = message.get("user_id", "anonymous")
-                cursor_data = message.get("cursor", {})
-                
-                await redis_manager.set_cache(
-                    f"cursor:{doc_id}:{user_id}",
-                    {
-                        "position": cursor_data.get("position", 0),
-                        "selection": cursor_data.get("selection", {}),
-                        "timestamp": "2024-01-01T00:00:00Z"
-                    },
-                    300  # 5 minutes TTL
-                )
-                
-                # Broadcast cursor update to other users
-                await websocket.send_text(json.dumps({
-                    "type": "cursor_broadcast",
-                    "doc_id": doc_id,
-                    "user_id": user_id,
-                    "cursor": cursor_data
-                }))
-            
-            elif message_type == "ping":
-                await websocket.send_text(json.dumps({
-                    "type": "pong",
-                    "timestamp": "2024-01-01T00:00:00Z"
-                }))
-            
-            else:
-                logger.warning(f"Unknown message type: {message_type}")
-                
+        return {
+            "id": str(uuid.uuid4()),
+            "filename": asset_info["filename"],
+            "original_filename": asset_info["original_filename"],
+            "url": asset_info["public_url"],
+            "size": asset_info["size"],
+            "mime_type": asset_info["mime_type"],
+            "message": "File uploaded successfully"
+        }
     except Exception as e:
-        logger.error(f"WebSocket error for doc {doc_id}: {e}")
-    finally:
-        logger.info(f"WebSocket connection closed for doc {doc_id}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 
-
-# GraphQL mock endpoint for testing
-@app.post("/graphql")
-async def graphql_endpoint(request: Request):
-    """GraphQL endpoint mock for testing."""
+@app.post("/api/v1/import")
+async def import_document(file: UploadFile = File(...)):
+    """Import a document and convert it to a page."""
     try:
-        data = await request.json()
-        query = data.get("query", "")
+        # Read file content
+        content_bytes = await file.read()
+        content = content_bytes.decode('utf-8')
         
-        if "me" in query:
-            return {
-                "data": {
-                    "me": {
-                        "id": "1",
-                        "name": "Demo User",
-                        "email": "demo@novadocs.com"
-                    }
-                }
-            }
+        # Get filename without extension for title
+        filename = file.filename or "Imported Document"
+        title = filename.rsplit('.', 1)[0] if '.' in filename else filename
+        
+        # Process content based on file type
+        if filename.endswith(('.md', '.markdown')):
+            # Markdown - use as is
+            processed_content = content
+        elif filename.endswith('.txt'):
+            # Text file - add title and basic formatting
+            processed_content = f"# {title}\n\n{content}"
+        elif filename.endswith(('.html', '.htm')):
+            # Basic HTML to Markdown conversion
+            import re
+            processed_content = content
+            processed_content = re.sub(r'<h1[^>]*>(.*?)</h1>', r'# \1\n\n', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<h2[^>]*>(.*?)</h2>', r'## \1\n\n', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<h3[^>]*>(.*?)</h3>', r'### \1\n\n', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<p[^>]*>(.*?)</p>', r'\1\n\n', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<br\s*/?>', '\n', processed_content, flags=re.IGNORECASE)
+            processed_content = re.sub(r'<[^>]+>', '', processed_content)  # Remove remaining HTML tags
+            processed_content = re.sub(r'\n\s*\n\s*\n', '\n\n', processed_content)  # Clean up newlines
+        else:
+            # Other files - wrap in code block
+            processed_content = f"# {title}\n\n```\n{content}\n```"
         
         return {
-            "data": {},
-            "errors": [{"message": "Query not implemented yet"}]
+            "title": title,
+            "content": processed_content,
+            "original_filename": filename,
+            "file_size": len(content_bytes),
+            "message": "Document imported successfully"
         }
         
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="File encoding not supported. Please use UTF-8 encoded files.")
     except Exception as e:
-        logger.error(f"GraphQL error: {e}")
-        return {
-            "errors": [{"message": f"GraphQL error: {str(e)}"}]
-        }
+        raise HTTPException(status_code=500, detail=f"Import failed: {str(e)}")
 
+# Stats API
+@app.get("/api/v1/stats")
+async def get_stats():
+    """Get platform statistics."""
+    minio_info = {}
+    if storage_service:
+        try:
+            buckets = storage_service.client.list_buckets()
+            minio_info = {
+                "buckets": len(buckets['Buckets']),
+                "storage_backend": "MinIO"
+            }
+        except Exception:
+            minio_info = {"storage_backend": "Unavailable"}
+    
+    return {
+        "pages": len(MOCK_PAGES),
+        "users": len(MOCK_USERS),
+        "workspaces": 1,
+        "storage_used": "12.5 MB",
+        **minio_info
+    }
+
+# GraphQL mock endpoint
+@app.post("/graphql")
+async def graphql_endpoint():
+    """GraphQL endpoint mock."""
+    return {
+        "data": {
+            "me": {
+                "id": "1",
+                "name": "Demo User",
+                "email": "demo@novadocs.com"
+            }
+        }
+    }
+
+@app.options("/graphql")
+async def graphql_options():
+    """Handle CORS preflight for GraphQL."""
+    return {}
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "src.main:app", 
-        host="0.0.0.0", 
-        port=8000, 
-        reload=True
-    )
+    uvicorn.run("src.main:app", host="0.0.0.0", port=8000, reload=True)

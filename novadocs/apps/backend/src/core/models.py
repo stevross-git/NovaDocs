@@ -88,7 +88,10 @@ class Page(Base, TimestampMixin):
     )
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     slug: Mapped[str] = mapped_column(String(200), nullable=False)
-    content: Mapped[str] = mapped_column(Text, default="")
+    content: Mapped[str] = mapped_column(Text, default="")  # Fallback content storage
+    
+    # MinIO Storage
+    storage_key: Mapped[Optional[str]] = mapped_column(String(500))  # MinIO object key
     
     # Relationships
     workspace_id: Mapped[uuid.UUID] = mapped_column(

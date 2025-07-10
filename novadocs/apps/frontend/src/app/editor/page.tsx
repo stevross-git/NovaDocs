@@ -1,243 +1,271 @@
+// apps/frontend/src/app/editor/page.tsx
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+import { useRouter, useSearchParams } from 'next/navigation'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
+import { CollaborativeEditor } from '@/components/editor/CollaborativeEditor'
 import { 
-  Plus,
-  BarChart3,
-  Search,
-  Database,
+  Save,
   FileText,
-  Users,
-  Clock,
-  TrendingUp,
-  Edit,
-  Share
+  Upload,
+  Download,
+  ArrowLeft,
+  Loader2
 } from 'lucide-react'
 import Link from 'next/link'
 
-export default function HomePage() {
-  const [searchQuery, setSearchQuery] = useState('')
+export default function EditorPage() {
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const pageId = searchParams.get('page')
+  const fileInputRef = useRef<HTMLInputElement>(null)
+  
+  const [title, setTitle] = useState('Untitled Document')
+  const [content, setContent] = useState('')
+  const [isSaving, setIsSaving] = useState(false)
+  const [isImporting, setIsImporting] = useState(false)
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('unsaved')
 
-  const quickStats = [
-    { label: 'Total Pages', value: '24', icon: FileText, color: 'bg-blue-500' },
-    { label: 'Active Users', value: '8', icon: Users, color: 'bg-green-500' },
-    { label: 'This Week', value: '+12', icon: TrendingUp, color: 'bg-purple-500' },
-    { label: 'Last Updated', value: '2h ago', icon: Clock, color: 'bg-orange-500' },
-  ]
+  const handleSave = async () => {
+    setIsSaving(true)
+    setSaveStatus('saving')
+    
+    try {
+      const response = await fetch(`${process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000'}/api/v1/pages`, {
+        method: pageId ? 'PUT' : 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title,
+          content,
+          workspace_id: 'default'
+        })
+      })
 
-  const recentPages = [
-    { 
-      id: '1', 
-      title: 'Getting Started', 
-      preview: 'Welcome to NovaDocs! This guide will help you get started with our collaborative platform...', 
-      updatedAt: '2 hours ago',
-      author: 'John Doe',
-      isShared: true
-    },
-    { 
-      id: '2', 
-      title: 'API Documentation', 
-      preview: 'Complete API reference for developers building integrations with NovaDocs...', 
-      updatedAt: '1 day ago',
-      author: 'Jane Smith',
-      isShared: false
-    },
-    { 
-      id: '3', 
-      title: 'Team Guidelines', 
-      preview: 'Our team collaboration guidelines and best practices for using NovaDocs...', 
-      updatedAt: '3 hours ago',
-      author: 'Mike Johnson',
-      isShared: true
-    },
-    { 
-      id: '4', 
-      title: 'Project Roadmap', 
-      preview: 'Q1 2025 roadmap with upcoming features and improvements...', 
-      updatedAt: '2 days ago',
-      author: 'Sarah Wilson',
-      isShared: false
-    },
-  ]
-
-  const quickActions = [
-    { 
-      label: 'New Page', 
-      icon: Plus, 
-      href: '/editor',
-      color: 'bg-blue-500 hover:bg-blue-600',
-      description: 'Create a new document'
-    },
-    { 
-      label: 'View Stats', 
-      icon: BarChart3, 
-      href: '/stats',
-      color: 'bg-purple-500 hover:bg-purple-600',
-      description: 'Analytics and insights'
-    },
-    { 
-      label: 'Search', 
-      icon: Search, 
-      href: '/search',
-      color: 'bg-green-500 hover:bg-green-600',
-      description: 'Find documents quickly'
-    },
-    { 
-      label: 'Database', 
-      icon: Database, 
-      href: '/database',
-      color: 'bg-orange-500 hover:bg-orange-600',
-      description: 'Manage data views'
-    },
-  ]
-
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault()
-    if (searchQuery.trim()) {
-      window.location.href = `/search?q=${encodeURIComponent(searchQuery)}`
+      if (response.ok) {
+        const data = await response.json()
+        setSaveStatus('saved')
+        
+        // If this is a new page, redirect to the edit URL with the page ID
+        if (!pageId && data.page?.id) {
+          router.push(`/editor?page=${data.page.id}`)
+        }
+        
+        // Show success message
+        setTimeout(() => setSaveStatus('unsaved'), 2000)
+      } else {
+        throw new Error('Failed to save page')
+      }
+    } catch (error) {
+      console.error('Save failed:', error)
+      setSaveStatus('unsaved')
+      alert('Failed to save page. Please try again.')
+    } finally {
+      setIsSaving(false)
     }
   }
 
-  return (
-    <div className="flex-1 overflow-auto">
-      <div className="max-w-6xl mx-auto p-6">
-        {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">
-            Welcome to NovaDocs
-          </h1>
-          <p className="text-gray-600">
-            A modern collaborative wiki platform for teams
-          </p>
-        </div>
+  const handleImportFile = () => {
+    fileInputRef.current?.click()
+  }
 
-        {/* Search Bar */}
-        <form onSubmit={handleSearch} className="mb-8">
-          <div className="relative max-w-md">
-            <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-gray-400" />
-            <Input
-              type="text"
-              placeholder="Search pages..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="pl-10"
+  const handleFileUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) return
+
+    setIsImporting(true)
+
+    try {
+      const fileContent = await readFileAsText(file)
+      
+      // Set the title from filename (without extension)
+      const fileName = file.name.replace(/\.[^/.]+$/, '')
+      setTitle(fileName)
+      
+      // Process content based on file type
+      let processedContent = fileContent
+      
+      if (file.name.endsWith('.md') || file.name.endsWith('.markdown')) {
+        // Markdown file - use as-is
+        processedContent = fileContent
+      } else if (file.name.endsWith('.txt')) {
+        // Text file - wrap in markdown
+        processedContent = `# ${fileName}\n\n${fileContent}`
+      } else if (file.name.endsWith('.html')) {
+        // HTML file - convert basic tags to markdown
+        processedContent = convertBasicHtmlToMarkdown(fileContent)
+      } else {
+        // Other file types - treat as plain text
+        processedContent = `# ${fileName}\n\n\`\`\`\n${fileContent}\n\`\`\``
+      }
+      
+      setContent(processedContent)
+      setSaveStatus('unsaved')
+      
+    } catch (error) {
+      console.error('Import failed:', error)
+      alert('Failed to import file. Please check the file format and try again.')
+    } finally {
+      setIsImporting(false)
+      // Reset the file input
+      if (fileInputRef.current) {
+        fileInputRef.current.value = ''
+      }
+    }
+  }
+
+  const readFileAsText = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = (e) => resolve(e.target?.result as string)
+      reader.onerror = (e) => reject(e)
+      reader.readAsText(file)
+    })
+  }
+
+  const convertBasicHtmlToMarkdown = (html: string): string => {
+    // Basic HTML to Markdown conversion
+    return html
+      .replace(/<h1[^>]*>(.*?)<\/h1>/gi, '# $1\n\n')
+      .replace(/<h2[^>]*>(.*?)<\/h2>/gi, '## $1\n\n')
+      .replace(/<h3[^>]*>(.*?)<\/h3>/gi, '### $1\n\n')
+      .replace(/<p[^>]*>(.*?)<\/p>/gi, '$1\n\n')
+      .replace(/<strong[^>]*>(.*?)<\/strong>/gi, '**$1**')
+      .replace(/<b[^>]*>(.*?)<\/b>/gi, '**$1**')
+      .replace(/<em[^>]*>(.*?)<\/em>/gi, '*$1*')
+      .replace(/<i[^>]*>(.*?)<\/i>/gi, '*$1*')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, '') // Remove remaining HTML tags
+      .replace(/\n\s*\n\s*\n/g, '\n\n') // Clean up multiple newlines
+  }
+
+  const handleExport = () => {
+    const blob = new Blob([content], { type: 'text/markdown' })
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${title.replace(/[^a-z0-9]/gi, '_').toLowerCase()}.md`
+    a.click()
+    URL.revokeObjectURL(url)
+  }
+
+  const getSaveButtonText = () => {
+    if (isSaving) return 'Saving...'
+    if (saveStatus === 'saved') return 'Saved!'
+    return 'Save'
+  }
+
+  const getSaveButtonIcon = () => {
+    if (isSaving) return <Loader2 className="h-4 w-4 animate-spin" />
+    return <Save className="h-4 w-4" />
+  }
+
+  return (
+    <div className="h-screen flex flex-col bg-gray-50">
+      {/* Header */}
+      <header className="bg-white border-b border-gray-200 px-6 py-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link href="/" className="text-gray-500 hover:text-gray-700">
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+            
+            <div className="flex items-center gap-3">
+              <FileText className="h-5 w-5 text-gray-600" />
+              <Input
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+                className="text-xl font-semibold border-none shadow-none p-0 focus:ring-0"
+                placeholder="Document title..."
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleImportFile}
+              disabled={isImporting}
+            >
+              {isImporting ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-2" />
+              ) : (
+                <Upload className="h-4 w-4 mr-2" />
+              )}
+              Import
+            </Button>
+            
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleExport}
+              disabled={!content}
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export
+            </Button>
+            
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={isSaving}
+              className={`
+                ${saveStatus === 'saved' ? 'bg-green-600 hover:bg-green-700' : ''}
+                ${saveStatus === 'saving' ? 'bg-blue-600' : ''}
+              `}
+            >
+              {getSaveButtonIcon()}
+              <span className="ml-2">{getSaveButtonText()}</span>
+            </Button>
+          </div>
+        </div>
+      </header>
+
+      {/* Editor */}
+      <main className="flex-1 overflow-hidden">
+        <div className="h-full max-w-4xl mx-auto p-6">
+          <div className="h-full bg-white rounded-lg shadow-sm border">
+            <CollaborativeEditor
+              pageId={pageId || 'new-page'}
+              initialContent={content || '<h1>Welcome to NovaDocs!</h1><p>Start typing or use "/" to add blocks...</p>'}
+              onUpdate={(newContent) => {
+                setContent(newContent)
+                setSaveStatus('unsaved')
+              }}
+              editable={true}
+              className="h-full"
             />
           </div>
-        </form>
-
-        {/* Quick Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-8">
-          {quickStats.map((stat) => {
-            const Icon = stat.icon
-            return (
-              <div key={stat.label} className="bg-white p-6 rounded-lg border border-gray-200">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <p className="text-sm font-medium text-gray-600">{stat.label}</p>
-                    <p className="text-2xl font-bold text-gray-900">{stat.value}</p>
-                  </div>
-                  <div className={`w-12 h-12 rounded-lg ${stat.color} flex items-center justify-center`}>
-                    <Icon className="h-6 w-6 text-white" />
-                  </div>
-                </div>
-              </div>
-            )
-          })}
         </div>
+      </main>
 
-        {/* Quick Actions */}
-        <div className="mb-8">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">Quick Actions</h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {quickActions.map((action) => {
-              const Icon = action.icon
-              return (
-                <Link key={action.label} href={action.href}>
-                  <div className={`${action.color} text-white p-6 rounded-lg transition-colors cursor-pointer`}>
-                    <div className="flex items-center gap-3 mb-2">
-                      <Icon className="h-6 w-6" />
-                      <span className="font-semibold">{action.label}</span>
-                    </div>
-                    <p className="text-sm opacity-90">{action.description}</p>
-                  </div>
-                </Link>
-              )
-            })}
+      {/* Hidden file input for import */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept=".md,.markdown,.txt,.html,.htm"
+        onChange={handleFileUpload}
+        className="hidden"
+      />
+
+      {/* Import instructions overlay */}
+      {isImporting && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white p-6 rounded-lg max-w-md mx-4">
+            <div className="flex items-center gap-3 mb-4">
+              <Loader2 className="h-5 w-5 animate-spin text-blue-600" />
+              <h3 className="text-lg font-semibold">Importing Document</h3>
+            </div>
+            <p className="text-gray-600">
+              Processing your file and converting it to markdown format...
+            </p>
           </div>
         </div>
-
-        {/* Recent Pages */}
-        <div className="mb-8">
-          <div className="flex items-center justify-between mb-4">
-            <h2 className="text-xl font-semibold text-gray-900">Recent Pages</h2>
-            <Link href="/search">
-              <Button variant="outline" size="sm">
-                View All
-              </Button>
-            </Link>
-          </div>
-          
-          <div className="space-y-4">
-            {recentPages.map((page) => (
-              <div key={page.id} className="bg-white p-6 rounded-lg border border-gray-200 hover:border-gray-300 transition-colors">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-2">
-                      <Link href={`/page/${page.id}`}>
-                        <h3 className="font-semibold text-gray-900 hover:text-blue-600 cursor-pointer">
-                          {page.title}
-                        </h3>
-                      </Link>
-                      {page.isShared && (
-                        <div className="flex items-center gap-1 text-xs text-gray-500">
-                          <Share className="h-3 w-3" />
-                          Shared
-                        </div>
-                      )}
-                    </div>
-                    <p className="text-gray-600 text-sm mb-2 line-clamp-2">{page.preview}</p>
-                    <div className="flex items-center gap-4 text-xs text-gray-500">
-                      <span>By {page.author}</span>
-                      <span>{page.updatedAt}</span>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2 ml-4">
-                    <Link href={`/editor?page=${page.id}`}>
-                      <Button variant="ghost" size="sm">
-                        <Edit className="h-4 w-4" />
-                      </Button>
-                    </Link>
-                    <Button variant="ghost" size="sm">
-                      <Share className="h-4 w-4" />
-                    </Button>
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Test API Buttons */}
-        <div className="bg-white p-6 rounded-lg border border-gray-200">
-          <h2 className="text-xl font-semibold text-gray-900 mb-4">API Testing</h2>
-          <div className="flex gap-4">
-            <Button
-              onClick={() => window.open('/api/health', '_blank')}
-              className="bg-blue-500 hover:bg-blue-600"
-            >
-              Test REST API
-            </Button>
-            <Button
-              onClick={() => window.open('/graphql', '_blank')}
-              className="bg-purple-500 hover:bg-purple-600"
-            >
-              Test GraphQL
-            </Button>
-          </div>
-        </div>
-      </div>
+      )}
     </div>
   )
 }

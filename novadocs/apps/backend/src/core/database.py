@@ -11,15 +11,25 @@ from sqlalchemy import text
 from src.core.config import settings
 from src.core.models import Base
 
-# Create async engine
+# Create async engine with proper pool configuration
+engine_kwargs = {
+    "echo": getattr(settings, 'DATABASE_ECHO', False),
+    "pool_pre_ping": True,
+}
+
+# Only add pool settings if not using NullPool
+if getattr(settings, 'DEBUG', False):
+    engine_kwargs["poolclass"] = NullPool
+else:
+    engine_kwargs.update({
+        "pool_size": getattr(settings, 'DATABASE_POOL_SIZE', 5),
+        "max_overflow": getattr(settings, 'DATABASE_MAX_OVERFLOW', 10),
+        "pool_recycle": 3600,
+    })
+
 engine = create_async_engine(
     str(settings.DATABASE_URL),
-    echo=settings.DATABASE_ECHO if hasattr(settings, 'DATABASE_ECHO') else False,
-    poolclass=NullPool if getattr(settings, 'DEBUG', False) else None,
-    pool_size=getattr(settings, 'DATABASE_POOL_SIZE', 5),
-    max_overflow=getattr(settings, 'DATABASE_MAX_OVERFLOW', 10),
-    pool_pre_ping=True,
-    pool_recycle=3600,
+    **engine_kwargs
 )
 
 # Create session factory

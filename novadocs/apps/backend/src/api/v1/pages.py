@@ -1,17 +1,18 @@
 # apps/backend/src/api/v1/pages.py
-"""Pages API routes."""
+"""Pages API routes with MinIO document storage."""
 
 import uuid
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from src.core.database import get_db_session
-from src.core.models import Page, User, Workspace, Block
-from src.core.exceptions import NotFoundError, PermissionError
+from src.core.models import Page, User, Workspace, Block, Asset
+from src.core.services.storage import storage_service
+from src.core.exceptions import NotFoundError, PermissionError, StorageError
 
 router = APIRouter(prefix="/api/v1/pages", tags=["pages"])
 
@@ -37,6 +38,7 @@ class PageResponse(BaseModel):
     title: str
     slug: str
     content: str
+    storage_key: Optional[str]
     workspace_id: str
     parent_id: Optional[str]
     created_by_id: str
@@ -46,14 +48,16 @@ class PageResponse(BaseModel):
     version: int
     created_at: str
     updated_at: str
+    document_url: Optional[str] = None
     
     @classmethod
-    def from_model(cls, page: Page) -> "PageResponse":
+    def from_model(cls, page: Page, content: str = "", document_url: str = None) -> "PageResponse":
         return cls(
             id=str(page.id),
             title=page.title,
             slug=page.slug,
-            content=page.content or "",
+            content=content,
+            storage_key=getattr(page, 'storage_key', None),
             workspace_id=str(page.workspace_id),
             parent_id=str(page.parent_id) if page.parent_id else None,
             created_by_id=str(page.created_by_id),
@@ -62,8 +66,19 @@ class PageResponse(BaseModel):
             collaboration_enabled=page.collaboration_enabled,
             version=page.version,
             created_at=page.created_at.isoformat(),
-            updated_at=page.updated_at.isoformat()
+            updated_at=page.updated_at.isoformat(),
+            document_url=document_url
         )
+
+
+class AssetResponse(BaseModel):
+    id: str
+    filename: str
+    original_filename: str
+    mime_type: str
+    size: int
+    public_url: str
+    created_at: str
 
 
 async def get_current_user(db: AsyncSession) -> User:
@@ -122,7 +137,7 @@ async def list_pages(
     workspace_id: Optional[str] = None,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """List all pages."""
+    """List all pages with their content from MinIO."""
     try:
         query = select(Page).order_by(Page.updated_at.desc())
         
@@ -132,7 +147,26 @@ async def list_pages(
         result = await db.execute(query)
         pages = result.scalars().all()
         
-        return [PageResponse.from_model(page) for page in pages]
+        page_responses = []
+        for page in pages:
+            content = ""
+            document_url = None
+            
+            # Try to get content from MinIO if storage_key exists
+            if hasattr(page, 'storage_key') and page.storage_key:
+                try:
+                    document = await storage_service.retrieve_document(page.storage_key)
+                    content = document.get('content', '')
+                    document_url = await storage_service.get_asset_url(page.storage_key)
+                except Exception as e:
+                    print(f"Warning: Could not retrieve document for page {page.id}: {e}")
+                    content = getattr(page, 'content', '')
+            else:
+                content = getattr(page, 'content', '')
+            
+            page_responses.append(PageResponse.from_model(page, content, document_url))
+        
+        return page_responses
     
     except Exception as e:
         raise HTTPException(
@@ -146,7 +180,7 @@ async def get_page(
     page_id: str,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Get a specific page."""
+    """Get a specific page with content from MinIO."""
     try:
         result = await db.execute(
             select(Page).where(Page.id == uuid.UUID(page_id))
@@ -159,7 +193,22 @@ async def get_page(
                 detail="Page not found"
             )
         
-        return PageResponse.from_model(page)
+        content = ""
+        document_url = None
+        
+        # Try to get content from MinIO if storage_key exists
+        if hasattr(page, 'storage_key') and page.storage_key:
+            try:
+                document = await storage_service.retrieve_document(page.storage_key)
+                content = document.get('content', '')
+                document_url = await storage_service.get_asset_url(page.storage_key)
+            except Exception as e:
+                print(f"Warning: Could not retrieve document for page {page_id}: {e}")
+                content = getattr(page, 'content', '')
+        else:
+            content = getattr(page, 'content', '')
+        
+        return PageResponse.from_model(page, content, document_url)
     
     except ValueError:
         raise HTTPException(
@@ -178,7 +227,7 @@ async def create_page(
     page_data: CreatePageRequest,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Create a new page."""
+    """Create a new page and store content in MinIO."""
     try:
         # Get current user and workspace
         user = await get_current_user(db)
@@ -192,11 +241,11 @@ async def create_page(
         # Generate slug
         slug = generate_slug(page_data.title)
         
-        # Create page
+        # Create page in database (without content)
         page = Page(
             title=page_data.title,
             slug=slug,
-            content=page_data.content or "",
+            content="",  # Content will be stored in MinIO
             workspace_id=workspace_id,
             parent_id=uuid.UUID(page_data.parent_id) if page_data.parent_id else None,
             created_by_id=user.id,
@@ -208,10 +257,32 @@ async def create_page(
         )
         
         db.add(page)
+        await db.flush()  # Get the page ID
+        
+        # Store document content in MinIO
+        storage_key = None
+        if page_data.content:
+            try:
+                storage_key = await storage_service.store_document(
+                    page_id=page.id,
+                    content=page_data.content,
+                    title=page_data.title,
+                    version=1,
+                    metadata={"created_by": str(user.id)}
+                )
+                
+                # Update page with storage key
+                page.storage_key = storage_key
+                
+            except StorageError as e:
+                # If MinIO storage fails, store in database as fallback
+                print(f"Warning: MinIO storage failed, using database fallback: {e}")
+                page.content = page_data.content
+        
         await db.commit()
         await db.refresh(page)
         
-        return PageResponse.from_model(page)
+        return PageResponse.from_model(page, page_data.content or "")
     
     except ValueError as e:
         raise HTTPException(
@@ -231,7 +302,7 @@ async def update_page(
     page_data: UpdatePageRequest,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Update an existing page."""
+    """Update an existing page and its content in MinIO."""
     try:
         # Get the page
         result = await db.execute(
@@ -245,11 +316,25 @@ async def update_page(
                 detail="Page not found"
             )
         
-        # Update fields
+        # Get current user
+        user = await get_current_user(db)
+        
+        # Create backup of current version if content is being updated
+        if page_data.content and hasattr(page, 'storage_key') and page.storage_key:
+            try:
+                await storage_service.backup_document(
+                    page_id=page.id,
+                    content=page_data.content,
+                    title=page.title
+                )
+            except Exception as e:
+                print(f"Warning: Backup creation failed: {e}")
+        
+        # Update database fields
         update_data = page_data.dict(exclude_unset=True)
         
         for field, value in update_data.items():
-            if hasattr(page, field):
+            if hasattr(page, field) and field != 'content':
                 setattr(page, field, value)
         
         # Update slug if title changed
@@ -263,10 +348,27 @@ async def update_page(
         # Increment version
         page.version += 1
         
+        # Store updated content in MinIO
+        if page_data.content:
+            try:
+                storage_key = await storage_service.store_document(
+                    page_id=page.id,
+                    content=page_data.content,
+                    title=page.title,
+                    version=page.version,
+                    metadata={"updated_by": str(user.id)}
+                )
+                page.storage_key = storage_key
+                
+            except StorageError as e:
+                # If MinIO storage fails, store in database as fallback
+                print(f"Warning: MinIO storage failed, using database fallback: {e}")
+                page.content = page_data.content
+        
         await db.commit()
         await db.refresh(page)
         
-        return PageResponse.from_model(page)
+        return PageResponse.from_model(page, page_data.content or "")
     
     except ValueError:
         raise HTTPException(
@@ -285,7 +387,7 @@ async def delete_page(
     page_id: str,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Delete a page."""
+    """Delete a page and its content from MinIO."""
     try:
         result = await db.execute(
             select(Page).where(Page.id == uuid.UUID(page_id))
@@ -298,6 +400,14 @@ async def delete_page(
                 detail="Page not found"
             )
         
+        # Delete document from MinIO if it exists
+        if hasattr(page, 'storage_key') and page.storage_key:
+            try:
+                await storage_service.delete_document(page.storage_key)
+            except Exception as e:
+                print(f"Warning: Could not delete document from MinIO: {e}")
+        
+        # Delete page from database
         await db.delete(page)
         await db.commit()
         
@@ -315,13 +425,15 @@ async def delete_page(
         )
 
 
-@router.post("/{page_id}/publish")
-async def publish_page(
+@router.post("/{page_id}/assets", response_model=AssetResponse)
+async def upload_asset(
     page_id: str,
+    file: UploadFile = File(...),
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Publish a page."""
+    """Upload an asset/file to MinIO for a specific page."""
     try:
+        # Get the page to verify it exists
         result = await db.execute(
             select(Page).where(Page.id == uuid.UUID(page_id))
         )
@@ -333,28 +445,58 @@ async def publish_page(
                 detail="Page not found"
             )
         
-        page.is_published = True
-        page.version += 1
+        # Get current user
+        user = await get_current_user(db)
         
+        # Store asset in MinIO
+        asset_info = await storage_service.store_asset(
+            file=file,
+            workspace_id=page.workspace_id,
+            uploaded_by_id=user.id,
+            folder=f"page-assets/{page_id}"
+        )
+        
+        # Create asset record in database
+        asset = Asset(
+            filename=asset_info["filename"],
+            original_filename=asset_info["original_filename"],
+            mime_type=asset_info["mime_type"],
+            size=asset_info["size"],
+            uploaded_by_id=asset_info["uploaded_by_id"],
+            workspace_id=asset_info["workspace_id"],
+            storage_path=asset_info["storage_key"],
+            public_url=asset_info["public_url"]
+        )
+        
+        db.add(asset)
         await db.commit()
-        await db.refresh(page)
+        await db.refresh(asset)
         
-        return PageResponse.from_model(page)
+        return AssetResponse(
+            id=str(asset.id),
+            filename=asset.filename,
+            original_filename=asset.original_filename,
+            mime_type=asset.mime_type,
+            size=asset.size,
+            public_url=asset.public_url,
+            created_at=asset.created_at.isoformat()
+        )
     
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to publish page: {str(e)}"
+            detail=f"Failed to upload asset: {str(e)}"
         )
 
 
-@router.post("/{page_id}/archive")
-async def archive_page(
+@router.get("/{page_id}/versions")
+async def get_page_versions(
     page_id: str,
     db: AsyncSession = Depends(get_db_session)
 ):
-    """Archive a page."""
+    """Get all versions/backups of a page from MinIO."""
     try:
+        # Verify page exists
         result = await db.execute(
             select(Page).where(Page.id == uuid.UUID(page_id))
         )
@@ -366,16 +508,16 @@ async def archive_page(
                 detail="Page not found"
             )
         
-        page.is_archived = True
-        page.version += 1
+        # Get document versions from MinIO
+        documents = await storage_service.list_documents(page.id)
         
-        await db.commit()
-        await db.refresh(page)
-        
-        return PageResponse.from_model(page)
+        return {
+            "page_id": page_id,
+            "versions": documents
+        }
     
     except Exception as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to archive page: {str(e)}"
+            detail=f"Failed to get page versions: {str(e)}"
         )

@@ -5,6 +5,44 @@ from fastapi import HTTPException, Request, status
 from fastapi.responses import JSONResponse
 
 
+
+"""Custom exceptions for NovaDocs."""
+
+
+class NovadocsException(Exception):
+    """Base exception for NovaDocs."""
+    pass
+
+
+class StorageError(NovadocsException):
+    """Exception raised for storage-related errors."""
+    pass
+
+
+class NotFoundError(NovadocsException):
+    """Exception raised when a resource is not found."""
+    pass
+
+
+class PermissionError(NovadocsException):
+    """Exception raised for permission-related errors."""
+    pass
+
+
+class ValidationError(NovadocsException):
+    """Exception raised for validation errors."""
+    pass
+
+
+class AuthenticationError(NovadocsException):
+    """Exception raised for authentication errors."""
+    pass
+
+
+class ConfigurationError(NovadocsException):
+    """Exception raised for configuration errors."""
+    pass
+
 class AppException(Exception):
     """Base application exception."""
     
