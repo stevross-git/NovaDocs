@@ -3,7 +3,7 @@ const nextConfig = {
   reactStrictMode: true,
   swcMinify: true,
   images: {
-    domains: ['localhost', '127.0.0.1'],
+    domains: ['localhost', '127.0.0.1', 'i.pravatar.cc'],
     formats: ['image/avif', 'image/webp']
   },
   webpack: (config, { isServer }) => {
