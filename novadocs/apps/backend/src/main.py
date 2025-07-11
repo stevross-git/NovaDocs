@@ -595,12 +595,33 @@ try:
     import strawberry
     from strawberry.fastapi import GraphQLRouter
     from src.api.graphql.schema import schema
-    
+
     graphql_app = GraphQLRouter(schema, graphiql=True)
     app.include_router(graphql_app, prefix="/graphql/advanced")
     logger.info("✅ Advanced GraphQL router loaded")
 except ImportError as e:
     logger.info("⚠️ Advanced GraphQL not available (using mock)")
+
+try:
+    from src.api.v1.workspaces import router as workspaces_router
+    app.include_router(workspaces_router)
+    logger.info("✅ Workspaces API router loaded")
+except ImportError as e:
+    logger.info("⚠️ Workspaces API not available")
+
+try:
+    from src.api.v1.comments import router as comments_router
+    app.include_router(comments_router)
+    logger.info("✅ Comments API router loaded")
+except ImportError as e:
+    logger.info("⚠️ Comments API not available")
+
+try:
+    from src.api.v1.favorites import router as favorites_router
+    app.include_router(favorites_router)
+    logger.info("✅ Favorites API router loaded")
+except ImportError as e:
+    logger.info("⚠️ Favorites API not available")
 
 # Simple WebSocket endpoint for collaboration (basic implementation)
 @app.websocket("/ws/collaboration/{doc_id}")

@@ -2,6 +2,7 @@
 """Pages API routes with MinIO document storage."""
 
 import uuid
+from datetime import datetime, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status, UploadFile, File, Form
 from pydantic import BaseModel
@@ -10,8 +11,9 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import selectinload
 
 from src.core.database import get_db_session
-from src.core.models import Page, User, Workspace, Block, Asset
+from src.core.models import Page, User, Workspace, Block, Asset, ShareLink
 from src.core.services.storage import storage_service
+from src.core.services.notion import NotionService
 from src.core.exceptions import NotFoundError, PermissionError, StorageError
 
 router = APIRouter(prefix="/api/v1/pages", tags=["pages"])
@@ -23,6 +25,7 @@ class CreatePageRequest(BaseModel):
     workspace_id: Optional[str] = None
     parent_id: Optional[str] = None
     is_template: bool = False
+    sync_to_notion: bool = False
 
 
 class UpdatePageRequest(BaseModel):
@@ -31,6 +34,7 @@ class UpdatePageRequest(BaseModel):
     content_text: Optional[str] = None
     is_published: Optional[bool] = None
     is_archived: Optional[bool] = None
+    sync_to_notion: bool = False
 
 
 class PageResponse(BaseModel):
@@ -79,6 +83,19 @@ class AssetResponse(BaseModel):
     size: int
     public_url: str
     created_at: str
+
+
+class ShareLinkResponse(BaseModel):
+    token: str
+    page_id: str
+    permission: str
+    expires_at: Optional[str] = None
+    url: str
+
+
+class CreateShareLinkRequest(BaseModel):
+    permission: str = "read"
+    expires_in_days: Optional[int] = None
 
 
 async def get_current_user(db: AsyncSession) -> User:
@@ -281,7 +298,18 @@ async def create_page(
         
         await db.commit()
         await db.refresh(page)
-        
+
+        # Optionally create a copy in Notion
+        if page_data.sync_to_notion:
+            notion_service = NotionService()
+            try:
+                notion_page_id = await notion_service.create_page(page.title, page_data.content or "")
+                if notion_page_id:
+                    page.notion_page_id = notion_page_id
+                    await db.commit()
+            except Exception as e:  # noqa: BLE001
+                print(f"Warning: failed to sync page to Notion: {e}")
+
         return PageResponse.from_model(page, page_data.content or "")
     
     except ValueError as e:
@@ -367,7 +395,19 @@ async def update_page(
         
         await db.commit()
         await db.refresh(page)
-        
+
+        # Optionally sync to Notion
+        if page_data.sync_to_notion and page.notion_page_id:
+            notion_service = NotionService()
+            try:
+                await notion_service.update_page(
+                    page.notion_page_id,
+                    title=page_data.title,
+                    content=page_data.content,
+                )
+            except Exception as e:  # noqa: BLE001
+                print(f"Warning: failed to update Notion page: {e}")
+
         return PageResponse.from_model(page, page_data.content or "")
     
     except ValueError:
@@ -520,4 +560,98 @@ async def get_page_versions(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Failed to get page versions: {str(e)}"
+        )
+
+
+@router.post("/{page_id}/share", response_model=ShareLinkResponse)
+async def create_share_link(
+    page_id: str,
+    link_data: CreateShareLinkRequest,
+    db: AsyncSession = Depends(get_db_session),
+):
+    """Create a shareable link for a page."""
+    try:
+        result = await db.execute(
+            select(Page).where(Page.id == uuid.UUID(page_id))
+        )
+        page = result.scalar_one_or_none()
+
+        if not page:
+            raise HTTPException(status_code=404, detail="Page not found")
+
+        user = await get_current_user(db)
+
+        expires_at = None
+        if link_data.expires_in_days:
+            from datetime import datetime, timedelta
+
+            expires_at = datetime.utcnow() + timedelta(days=link_data.expires_in_days)
+
+        share_link = ShareLink(
+            token=uuid.uuid4().hex,
+            page_id=page.id,
+            created_by_id=user.id,
+            permission=link_data.permission,
+            expires_at=expires_at,
+        )
+        db.add(share_link)
+        await db.commit()
+        await db.refresh(share_link)
+
+        url = f"/share/{share_link.token}"
+
+        return ShareLinkResponse(
+            token=share_link.token,
+            page_id=str(page.id),
+            permission=share_link.permission,
+            expires_at=share_link.expires_at.isoformat() if share_link.expires_at else None,
+            url=url,
+        )
+
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to create share link: {e}",
+        )
+
+
+@router.get("/shared/{token}", response_model=PageResponse)
+async def get_shared_page(token: str, db: AsyncSession = Depends(get_db_session)):
+    """Retrieve a page via a share link token."""
+    try:
+        result = await db.execute(
+            select(ShareLink).where(ShareLink.token == token, ShareLink.is_active == True)
+        )
+        share_link = result.scalar_one_or_none()
+
+        if not share_link:
+            raise HTTPException(status_code=404, detail="Share link not found")
+
+        if share_link.expires_at and share_link.expires_at < datetime.utcnow():
+            raise HTTPException(status_code=404, detail="Share link expired")
+
+        result = await db.execute(select(Page).where(Page.id == share_link.page_id))
+        page = result.scalar_one_or_none()
+
+        if not page:
+            raise HTTPException(status_code=404, detail="Page not found")
+
+        content = ""
+        document_url = None
+        if hasattr(page, "storage_key") and page.storage_key:
+            try:
+                document = await storage_service.retrieve_document(page.storage_key)
+                content = document.get("content", "")
+                document_url = await storage_service.get_asset_url(page.storage_key)
+            except Exception:
+                content = getattr(page, "content", "")
+        else:
+            content = getattr(page, "content", "")
+
+        return PageResponse.from_model(page, content, document_url)
+
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to retrieve shared page: {e}",
         )

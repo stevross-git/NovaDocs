@@ -12,6 +12,12 @@ A modern, self-hosted collaborative wiki platform built with Next.js, FastAPI, a
 - 👥 User management interface
 - 📱 Mobile-responsive design
 - 🚀 Fast and scalable architecture
+- 💾 Pages stored in MinIO with optional Notion sync
+- 🏢 Create workspaces with optional Notion sync
+- 🔄 Update pages in Notion when enabled
+- 🔗 Share pages via unique links
+- 💬 Comment on pages for collaboration
+- ⭐ Mark pages as favorites
 
 ## Quick Start
 

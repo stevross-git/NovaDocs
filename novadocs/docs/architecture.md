@@ -266,3 +266,9 @@ services:
 - Mobile React Native client
 - AI summarization of pages
 - Plugin marketplace
+- Notion integration for page sync
+- Notion integration for workspace sync
+- Notion integration for page updates
+- Share links for public page access
+- Comment system for pages
+- Favorite pages for quick access
