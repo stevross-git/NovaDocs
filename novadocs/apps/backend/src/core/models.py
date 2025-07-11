@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 from typing import Dict, List, Any, Optional
-from sqlalchemy import String, Text, Integer, Boolean, DateTime, JSON, ForeignKey, Index
+from sqlalchemy import String, Text, Integer, Boolean, DateTime, JSON, ForeignKey, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -71,6 +71,7 @@ class Workspace(Base, TimestampMixin):
     # Settings
     is_public: Mapped[bool] = mapped_column(Boolean, default=False)
     settings: Mapped[Dict[str, Any]] = mapped_column(JSON, default=dict)
+    notion_page_id: Mapped[Optional[str]] = mapped_column(String(100))
     
     def __repr__(self):
         return f"<Workspace {self.name}>"
@@ -116,6 +117,7 @@ class Page(Base, TimestampMixin):
     
     # Versioning
     version: Mapped[int] = mapped_column(Integer, default=1)
+    notion_page_id: Mapped[Optional[str]] = mapped_column(String(100))
     
     # Search
     content_text: Mapped[Optional[str]] = mapped_column(Text)  # Plain text for search
@@ -330,6 +332,35 @@ class ShareLink(Base, TimestampMixin):
         return f"<ShareLink {self.token}>"
 
 
+class Favorite(Base, TimestampMixin):
+    """User favorite pages."""
+
+    __tablename__ = "favorites"
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        primary_key=True,
+        default=uuid.uuid4
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False
+    )
+    page_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("pages.id", ondelete="CASCADE"),
+        nullable=False
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "page_id", name="uq_favorite_user_page"),
+    )
+
+    def __repr__(self):
+        return f"<Favorite {self.user_id} {self.page_id}>"
+
+
 # Indexes for performance
 Index('idx_pages_workspace_id', Page.workspace_id)
 Index('idx_pages_parent_id', Page.parent_id)
@@ -343,3 +374,4 @@ Index('idx_permissions_user', Permission.user_id)
 Index('idx_comments_page_id', Comment.page_id)
 Index('idx_comments_block_id', Comment.block_id)
 Index('idx_assets_workspace_id', Asset.workspace_id)
+Index('idx_favorites_user_id', Favorite.user_id)

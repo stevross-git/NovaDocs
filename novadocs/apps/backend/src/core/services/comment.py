@@ -35,7 +35,7 @@ class CommentService:
         comment = Comment(
             page_id=page_id,
             block_id=block_id,
-            user_id=user_id,
+            author_id=user_id,
             content=content,
             metadata=metadata or {}
         )
@@ -62,7 +62,7 @@ class CommentService:
             raise NotFoundError("Comment not found")
         
         # Check if user owns the comment
-        if comment.user_id != user_id:
+        if comment.author_id != user_id:
             raise PermissionError("You can only update your own comments")
         
         for key, value in updates.items():
@@ -84,7 +84,7 @@ class CommentService:
             raise NotFoundError("Comment not found")
         
         # Check if user owns the comment
-        if comment.user_id != user_id:
+        if comment.author_id != user_id:
             raise PermissionError("You can only delete your own comments")
         
         await self.db.delete(comment)
